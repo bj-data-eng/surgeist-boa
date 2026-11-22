@@ -466,7 +466,7 @@ impl Context {
         strict: bool,
     ) -> JsResult<bool> {
         self.global_object().set_with_receiver(
-            name.into(),
+            &name.into(),
             value,
             self.global_binding_receiver(),
             strict,

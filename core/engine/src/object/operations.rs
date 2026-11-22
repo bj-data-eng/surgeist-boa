@@ -134,7 +134,7 @@ impl JsObject {
         V: Into<JsValue>,
     {
         self.set_with_receiver(
-            key.into(),
+            &key.into(),
             value.into(),
             self.clone().into(),
             throw,
@@ -144,7 +144,7 @@ impl JsObject {
 
     pub(crate) fn set_with_receiver(
         &self,
-        key: PropertyKey,
+        key: &PropertyKey,
         value: JsValue,
         receiver: JsValue,
         throw: bool,

@@ -1,4 +1,4 @@
-//! WindowProxy internal methods for hosted Window realms.
+//! `WindowProxy` internal methods for hosted Window realms.
 
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -30,7 +30,7 @@ impl Default for WindowOrigin {
     }
 }
 
-/// Wraps an ordinary Window global with its guest-visible WindowProxy.
+/// Wraps an ordinary Window global with its guest-visible `WindowProxy`.
 #[must_use]
 pub fn window_proxy(root_shape: &RootShape, window: JsObject, origin: WindowOrigin) -> JsObject {
     JsObject::from_proto_and_data_in(
@@ -44,7 +44,7 @@ pub fn window_proxy(root_shape: &RootShape, window: JsObject, origin: WindowOrig
     )
 }
 
-/// Returns the native origin token for this WindowProxy.
+/// Returns the native origin token for this `WindowProxy`.
 #[must_use]
 pub fn window_proxy_origin(object: &JsObject) -> Option<WindowOrigin> {
     object
@@ -56,10 +56,10 @@ pub(crate) fn is_window_proxy(object: &JsObject) -> bool {
     object.is::<WindowProxy>()
 }
 
-/// Installs the native indexed reader for this WindowProxy once.
+/// Installs the native indexed reader for this `WindowProxy` once.
 ///
 /// It receives no arguments for the count, one numeric argument to retrieve
-/// a child WindowProxy or undefined, and an additional `true` argument to
+/// a child `WindowProxy` or undefined, and an additional `true` argument to
 /// check membership without projecting a child.
 #[must_use]
 pub fn install_window_index_reader(object: &JsObject, reader: JsObject) -> bool {

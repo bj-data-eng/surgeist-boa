@@ -143,7 +143,7 @@ impl WindowProperties {
             .attributes
             .insert(SlotAttributes::NOT_CACHEABLE);
         let Some((window, reader)) = source else {
-            return Ok(None);
+            return Self::ordinary_descriptor(object, key, context);
         };
 
         // The Window chain is immutable and these ordinary descriptor probes
@@ -151,7 +151,7 @@ impl WindowProperties {
         let mut current = Some(window.clone());
         while let Some(candidate) = current {
             if !candidate.is::<Self>() && candidate.borrow().properties.get(key).is_some() {
-                return Ok(None);
+                return Self::ordinary_descriptor(object, key, context);
             }
             current = candidate.prototype();
         }
@@ -162,14 +162,30 @@ impl WindowProperties {
             PropertyKey::Symbol(_) => return Ok(None),
         };
         let value = reader.call(&window.into(), &[name.into()], context)?;
-        Ok((!value.is_undefined()).then(|| {
+        if value.is_undefined() {
+            return Self::ordinary_descriptor(object, key, context);
+        }
+        Ok(Some(
             PropertyDescriptor::builder()
                 .value(value)
                 .writable(true)
                 .enumerable(false)
                 .configurable(true)
-                .build()
-        }))
+                .build(),
+        ))
+    }
+
+    fn ordinary_descriptor(
+        object: &JsObject,
+        key: &PropertyKey,
+        context: &mut InternalMethodPropertyContext<'_>,
+    ) -> JsResult<Option<PropertyDescriptor>> {
+        let result = ordinary_get_own_property(object, key, context);
+        context
+            .slot()
+            .attributes
+            .insert(SlotAttributes::NOT_CACHEABLE);
+        result
     }
 }
 
