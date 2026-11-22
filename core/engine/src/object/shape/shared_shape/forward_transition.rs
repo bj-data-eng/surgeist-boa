@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, num::NonZeroUsize, ptr::NonNull};
 
 use boa_gc::{Finalize, Gc, GcRefCell, Trace, WeakGc};
 use rustc_hash::FxHashMap;
@@ -6,6 +6,15 @@ use rustc_hash::FxHashMap;
 use crate::object::JsPrototype;
 
 use super::{Inner as SharedShapeInner, TransitionKey};
+
+fn prototype_key(prototype: &JsPrototype) -> Option<NonZeroUsize> {
+    // An upgradable transition's shape owns its prototype, so that allocation
+    // cannot be reused while a cache hit for its address can succeed. After
+    // collection, the old weak transition misses even if the address is reused.
+    prototype
+        .as_ref()
+        .map(|prototype| NonNull::from(prototype.as_ref()).addr())
+}
 
 /// Maps transition key type to a [`SharedShapeInner`] transition.
 #[derive(Debug, Trace, Finalize)]
@@ -41,7 +50,7 @@ impl<T: Debug + Trace + Finalize> TransitionMap<T> {
 #[derive(Default, Debug, Trace, Finalize)]
 struct Inner {
     properties: Option<Box<TransitionMap<TransitionKey>>>,
-    prototypes: Option<Box<TransitionMap<JsPrototype>>>,
+    prototypes: Option<Box<TransitionMap<Option<NonZeroUsize>>>>,
 }
 
 /// Holds a forward reference to a previously created transition.
@@ -66,7 +75,7 @@ impl ForwardTransition {
     }
 
     /// Insert a prototype transition.
-    pub(super) fn insert_prototype(&self, key: JsPrototype, value: &Gc<SharedShapeInner>) {
+    pub(super) fn insert_prototype(&self, prototype: &JsPrototype, value: &Gc<SharedShapeInner>) {
         let mut this = self.inner.borrow_mut();
         let prototypes = this.prototypes.get_or_insert_with(Box::default);
 
@@ -74,7 +83,9 @@ impl ForwardTransition {
             prototypes.map.retain(|_, v| v.is_upgradable());
         }
 
-        prototypes.map.insert(key, WeakGc::new(value));
+        prototypes
+            .map
+            .insert(prototype_key(prototype), WeakGc::new(value));
     }
 
     /// Get a property transition, return [`None`] otherwise.
@@ -85,10 +96,13 @@ impl ForwardTransition {
     }
 
     /// Get a prototype transition, return [`None`] otherwise.
-    pub(super) fn get_prototype(&self, key: &JsPrototype) -> Option<WeakGc<SharedShapeInner>> {
+    pub(super) fn get_prototype(
+        &self,
+        prototype: &JsPrototype,
+    ) -> Option<WeakGc<SharedShapeInner>> {
         let this = self.inner.borrow();
         let transitions = this.prototypes.as_ref()?;
-        transitions.map.get(key).cloned()
+        transitions.map.get(&prototype_key(prototype)).cloned()
     }
 
     /// Prunes the [`WeakGc`]s that have been garbage collected.
