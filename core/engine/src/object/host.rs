@@ -525,13 +525,12 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool> {
         let present = match key {
-            PropertyKey::Index(index) => {
-                Self::source(object)?.index_present(object, index.get(), context)?
-            }
             PropertyKey::String(name) if T::HAS_NAMED_PROPERTIES => {
                 Self::visible_name_present(object, key, name, context)?
                     || ordinary_get_own_property(object, key, context)?.is_some()
             }
+            // Numeric membership reaches the indexed own descriptor, including
+            // any failure from its value provider.
             _ => return ordinary_has_property(object, key, context),
         };
         context
