@@ -282,6 +282,21 @@ pub fn readonly_indexed_source<T: IndexedProperties>(object: &JsObject) -> Optio
 #[derive(Trace, Finalize)]
 struct ReadOnlyIndices<T: IndexedProperties>(Gc<T>);
 
+#[derive(Default)]
+struct NamedVisibility<'name> {
+    unchecked_name: Option<&'name JsString>,
+    reached_effectful_descriptor: bool,
+}
+
+impl<'name> NamedVisibility<'name> {
+    fn lookup(name: &'name JsString) -> Self {
+        Self {
+            unchecked_name: Some(name),
+            reached_effectful_descriptor: false,
+        }
+    }
+}
+
 impl<T: IndexedProperties> JsData for ReadOnlyIndices<T> {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
         &Self::METHODS
@@ -336,7 +351,7 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
                 .slot()
                 .attributes
                 .insert(SlotAttributes::NOT_CACHEABLE);
-            if Self::name_is_unmasked(object, key, &mut Some(name), context)? {
+            if Self::name_is_unmasked(object, key, &mut NamedVisibility::lookup(name), context)? {
                 return Ok(Self::source(object)?
                     .named_value(object, name, context)?
                     .map(|value| Self::descriptor(value, false)));
@@ -470,11 +485,11 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         name: &JsString,
         context: &mut Context,
     ) -> JsResult<bool> {
-        let mut unchecked_name = Some(name);
-        if !Self::name_is_unmasked(object, key, &mut unchecked_name, context)? {
+        let mut visibility = NamedVisibility::lookup(name);
+        if !Self::name_is_unmasked(object, key, &mut visibility, context)? {
             return Ok(false);
         }
-        match unchecked_name {
+        match visibility.unchecked_name {
             Some(name) => Self::source(object)?.named_present(object, name, context),
             None => Ok(true),
         }
@@ -483,7 +498,7 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
     fn name_is_unmasked(
         object: &JsObject,
         key: &PropertyKey,
-        unchecked_name: &mut Option<&JsString>,
+        visibility: &mut NamedVisibility<'_>,
         context: &mut Context,
     ) -> JsResult<bool> {
         // An ordinary own field of the collection masks its synthesized name.
@@ -523,16 +538,15 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
             }
             visited.push(prototype.clone());
             if !prototype.is::<WindowProperties>() {
-                // Check support before a descriptor lookup with observable
-                // effects and retain that answer for
-                // the rest of this traversal. Own-key enumeration already knows.
-                if let Some(name) = *unchecked_name
-                    && prototype.vtable().named_descriptor_has_effects
-                {
-                    if !Self::source(object)?.named_present(object, name, context)? {
+                if prototype.vtable().named_descriptor_has_effects {
+                    // This lookup can run guest code before later candidates
+                    // are visited. Check support before entering it.
+                    if let Some(name) = visibility.unchecked_name.take()
+                        && !Self::source(object)?.named_present(object, name, context)?
+                    {
                         return Ok(false);
                     }
-                    *unchecked_name = None;
+                    visibility.reached_effectful_descriptor = true;
                 }
                 let mut descriptor_context = InternalMethodPropertyContext::new(context);
                 if prototype
@@ -570,8 +584,9 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         observed_names
             .try_reserve(names.len())
             .map_err(|_| JsNativeError::range().with_message("Too many collection properties"))?;
+        let mut visibility = NamedVisibility::default();
         for name in names {
-            let key = PropertyKey::from(name);
+            let key = PropertyKey::from(name.clone());
             // A numeric supported name belongs to the named group unless the
             // same key was already emitted as a supported index.
             if let PropertyKey::Index(index) = &key
@@ -582,7 +597,10 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
             let Entry::Vacant(observed) = observed_names.entry(key.clone()) else {
                 continue;
             };
-            let visible = Self::name_is_unmasked(object, &key, &mut None, context)?;
+            let still_supported = !visibility.reached_effectful_descriptor
+                || source.named_present(object, &name, context)?;
+            let visible =
+                still_supported && Self::name_is_unmasked(object, &key, &mut visibility, context)?;
             observed.insert(visible);
             if visible {
                 keys.push(key);
