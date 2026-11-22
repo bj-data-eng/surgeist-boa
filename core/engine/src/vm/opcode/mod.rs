@@ -1067,7 +1067,7 @@ generate_opcodes! {
     ///   - Output: dst
     GetNameGlobal { dst: RegisterOperand, binding_index: IndexOperand, ic_index: IndexOperand },
 
-    /// Find a binding on the environment and set the `current_binding` of the current frame.
+    /// Resolve an assignment target and save its reference in the current frame.
     ///
     /// - Operands:
     ///   - binding_index: `IndexOperand`
@@ -2268,8 +2268,8 @@ generate_opcodes! {
     Reserved57 => Reserved,
     /// Reserved [`Opcode`].
     Reserved58 => Reserved,
-    /// Reserved [`Opcode`].
-    Reserved59 => Reserved,
+    /// Discard a pending binding without writing to it.
+    PopBinding,
     /// Declare `var` type variable during eval declaration instantiation.
     ///
     /// - Operands:

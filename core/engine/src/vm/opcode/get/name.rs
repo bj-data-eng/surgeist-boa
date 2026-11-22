@@ -3,7 +3,10 @@ use crate::{
     error::JsNativeError,
     object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
     property::PropertyKey,
-    vm::opcode::{IndexOperand, Operation, RegisterOperand},
+    vm::{
+        call_frame::BindingReference,
+        opcode::{IndexOperand, Operation, RegisterOperand},
+    },
 };
 
 /// `GetName` implements the Opcode Operation for `Opcode::GetName`
@@ -125,7 +128,7 @@ impl Operation for GetNameGlobal {
 /// `GetLocator` implements the Opcode Operation for `Opcode::GetLocator`
 ///
 /// Operation:
-///  - Find a binding on the environment and set the `current_binding` of the current frame.
+///  - Resolve an assignment target and save its reference in the current frame.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GetLocator;
 
@@ -136,7 +139,15 @@ impl GetLocator {
             context.vm.frame().code_block.bindings[usize::from(index)].clone();
         context.find_runtime_binding(&mut binding_locator)?;
 
-        context.vm.frame_mut().binding_stack.push(binding_locator);
+        // A global locator can be the fallback from environment lookup. Determine whether
+        // it names a real binding before the RHS can change the global object.
+        let reference =
+            if binding_locator.is_global() && !context.is_initialized_binding(&binding_locator)? {
+                BindingReference::UnresolvableGlobal(binding_locator.name().clone())
+            } else {
+                BindingReference::Resolved(binding_locator)
+            };
+        context.vm.frame_mut().push_binding(reference);
 
         Ok(())
     }
@@ -151,8 +162,7 @@ impl Operation for GetLocator {
 /// `GetNameAndLocator` implements the Opcode Operation for `Opcode::GetNameAndLocator`
 ///
 /// Operation:
-///  - Find a binding on the environment chain and store its value in dst, setting the
-///    `current_binding` of the current frame.
+///  - Find a binding on the environment chain, store its value in dst, and save its reference.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GetNameAndLocator;
 
@@ -170,7 +180,10 @@ impl GetNameAndLocator {
             JsNativeError::reference().with_message(format!("{name} is not defined"))
         })?;
 
-        context.vm.frame_mut().binding_stack.push(binding_locator);
+        context
+            .vm
+            .frame_mut()
+            .push_binding(BindingReference::Resolved(binding_locator));
         context.vm.set_register(value.into(), result);
         Ok(())
     }

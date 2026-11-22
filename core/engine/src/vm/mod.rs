@@ -651,6 +651,10 @@ impl Vm {
 
         let catch_address = handler.handler();
         let environment_sp = frame.env_fp + handler.environment_count;
+        let handler_start = handler.start.as_u32();
+
+        // Preserve assignments enclosing the protected range and discard abandoned RHS work.
+        frame.discard_bindings_since(handler_start);
 
         // Go to handler location.
         frame.pc = u32::from(catch_address);

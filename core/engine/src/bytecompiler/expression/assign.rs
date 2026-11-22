@@ -1,5 +1,7 @@
 use crate::{
-    bytecompiler::{Access, BindingAccessOpcode, ByteCompiler, Label, Register, ToJsString},
+    bytecompiler::{
+        Access, BindingAccessOpcode, BindingKind, ByteCompiler, Label, Register, ToJsString,
+    },
     vm::opcode::BindingOpcode,
 };
 use boa_ast::{
@@ -130,6 +132,7 @@ impl ByteCompiler<'_> {
             };
 
             let early_exit;
+            let mut has_saved_binding = false;
 
             match access {
                 Access::Variable { name } => {
@@ -144,6 +147,8 @@ impl ByteCompiler<'_> {
                     if is_lexical {
                         compiler.emit_binding_access(BindingAccessOpcode::GetName, &index, dst);
                     } else {
+                        has_saved_binding =
+                            matches!(index, BindingKind::Global(_) | BindingKind::Stack(_));
                         compiler.emit_binding_access(
                             BindingAccessOpcode::GetNameAndLocator,
                             &index,
@@ -301,6 +306,9 @@ impl ByteCompiler<'_> {
             if let Some(early_exit) = early_exit {
                 let skip = compiler.jump();
                 compiler.patch_jump(early_exit);
+                if has_saved_binding {
+                    compiler.bytecode.emit_pop_binding();
+                }
                 compiler.patch_jump(skip);
             }
         }
