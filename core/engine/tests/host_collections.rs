@@ -376,3 +376,78 @@ fn named_collection_rechecks_values_after_prototype_reentry() -> JsResult<()> {
     );
     Ok(())
 }
+
+#[test]
+fn callable_collection_has_html_dda_and_exact_call_identity() -> JsResult<()> {
+    let mut context = Context::default();
+    let _callback = context.eval(Source::from_bytes(
+        r#"
+        const marker = {};
+        (function (...args) {
+            if (args[0] === "throw") throw marker;
+            if (args[0] === "nested") {
+                return Reflect.apply(this, {unrelated: true}, args.slice(1));
+            }
+            return [this, args];
+        })
+        "#,
+    ))?;
+    let source = register_collection(&mut context, vec![js_string!("named")]);
+    let other = readonly_indexed(context.root_shape(), None, source.clone());
+    context.register_global_property(js_string!("otherCollection"), other, Attribute::all())?;
+
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        const arg = {};
+        const thrownBy = (action, expected) => {
+            try { action(); } catch (error) { return error === expected; }
+            return false;
+        };
+        const exact = (action, holder, args) => {
+            try {
+                const [seen, values] = action();
+                return seen === holder && values.length === args.length
+                    && values.every((value, index) => Object.is(value, args[index]));
+            } catch (_) { return false; }
+        };
+        const prototype = Object.getPrototypeOf(collection);
+        prototype.inherited = "ordinary";
+        const instance = collection;
+        const ordinary = Object.create(collection);
+        const proxy = new Proxy(collection, {});
+        let constructible = true;
+        try { new collection(); } catch (error) { constructible = !(error instanceof TypeError); }
+        [
+            typeof collection === "undefined" && !Boolean(collection),
+            collection == null && null == collection && collection == undefined && undefined == collection,
+            collection !== null && collection !== undefined && Object.is(collection, instance)
+                && collection !== otherCollection,
+            typeof ordinary === "object" && Boolean(ordinary) && ordinary != null,
+            typeof proxy === "function" && Boolean(proxy) && proxy != null,
+            !constructible && collection.inherited === "ordinary" && Object.getPrototypeOf(collection) === prototype,
+            collection[0] === "indexed" && collection.named === "native"
+                && Reflect.ownKeys(collection).join() === "0,named",
+            exact(() => collection(arg, undefined, 3), collection, [arg, undefined, 3]),
+            exact(() => Reflect.apply(collection, otherCollection, [arg, 7]), collection, [arg, 7]),
+            exact(() => Reflect.apply(otherCollection, collection, []), otherCollection, []),
+            exact(() => proxy(arg), collection, [arg]),
+            exact(() => collection("nested", arg, null), collection, [arg, null]),
+            thrownBy(() => Reflect.apply(otherCollection, arg, ["throw"]), marker),
+            exact(() => otherCollection(arg), otherCollection, [arg])
+        ].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!(
+            "true;true;true;true;true;true;true;true;true;true;true;true;true;true"
+        )),
+        "a callable collection keeps Annex B, property, identity and callback semantics together",
+    );
+    source.names.borrow_mut().clear();
+    let after = context.eval(Source::from_bytes(
+        "collection.named === undefined && Reflect.ownKeys(collection).join() === '0'",
+    ))?;
+    assert_eq!(after.as_boolean(), Some(true));
+    Ok(())
+}
