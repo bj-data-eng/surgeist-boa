@@ -442,6 +442,38 @@ impl Context {
         self.vm.frame().realm.global_object().clone()
     }
 
+    /// Returns the global this value of the active realm.
+    #[must_use]
+    pub fn global_this(&self) -> JsObject {
+        self.vm.frame().realm.global_this().clone()
+    }
+
+    pub(crate) fn global_binding_receiver(&self) -> JsValue {
+        let realm = self.realm();
+        let global_this = realm.global_this();
+        if crate::object::host::is_window_proxy(global_this) {
+            // Guest accessors must not expose the ordinary inner Window.
+            global_this.clone().into()
+        } else {
+            realm.global_object().clone().into()
+        }
+    }
+
+    pub(crate) fn set_global_binding_value(
+        &mut self,
+        name: JsString,
+        value: JsValue,
+        strict: bool,
+    ) -> JsResult<bool> {
+        self.global_object().set_with_receiver(
+            name.into(),
+            value,
+            self.global_binding_receiver(),
+            strict,
+            self,
+        )
+    }
+
     /// Returns the currently active intrinsic constructors and objects.
     #[inline]
     #[must_use]

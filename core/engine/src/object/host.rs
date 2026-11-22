@@ -1,8 +1,12 @@
 //! Native host objects with selected ECMAScript internal methods.
 
+mod window;
+pub(crate) use window::is_window_proxy;
+pub use window::{WindowOrigin, install_window_index_reader, window_proxy, window_proxy_origin};
+
 use std::collections::HashSet;
 
-use boa_gc::{Finalize, Gc, Trace};
+use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
 use crate::{
     Context, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
@@ -36,13 +40,25 @@ pub fn immutable_prototype(root_shape: &RootShape, prototype: JsPrototype) -> Js
     JsObject::from_proto_and_data_in(root_shape, prototype, ImmutablePrototype)
 }
 
-/// Creates an empty Window named-properties layer.
+/// Creates the named-properties layer for the associated Window.
 ///
-/// It refuses guest definitions, deletions and attempts to prevent extensions.
-/// Ordinary assignment can still invoke inherited setters on the actual receiver.
+/// The Window and its prototype chain must use ordinary own descriptors, apart
+/// from this named-properties layer. Install the native name reader before
+/// exposing the Window to scripts.
 #[must_use]
-pub fn window_properties(root_shape: &RootShape, prototype: JsObject) -> JsObject {
-    let object = JsObject::from_proto_and_data_in(root_shape, Some(prototype), WindowProperties);
+pub fn window_properties(
+    root_shape: &RootShape,
+    window: JsObject,
+    prototype: JsObject,
+) -> JsObject {
+    let object = JsObject::from_proto_and_data_in(
+        root_shape,
+        Some(prototype),
+        WindowProperties {
+            window,
+            reader: GcRefCell::default(),
+        },
+    );
     object.insert_property(
         JsSymbol::to_string_tag(),
         PropertyDescriptor::builder()
@@ -55,6 +71,24 @@ pub fn window_properties(root_shape: &RootShape, prototype: JsObject) -> JsObjec
     object
 }
 
+/// Installs this layer's live native reader once. The callable receives the
+/// exact name as a string and returns `undefined` for an unsupported name.
+#[must_use]
+pub fn install_window_name_reader(object: &JsObject, reader: JsObject) -> bool {
+    let Some(layer) = object.downcast_ref::<WindowProperties>() else {
+        return false;
+    };
+    if !reader.is_callable() {
+        return false;
+    }
+    let mut slot = layer.reader.borrow_mut();
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(reader);
+    true
+}
+
 #[derive(Clone, Copy, Trace, Finalize)]
 #[boa_gc(empty_trace)]
 struct ImmutablePrototype;
@@ -65,13 +99,17 @@ impl JsData for ImmutablePrototype {
     }
 }
 
-#[derive(Clone, Copy, Trace, Finalize)]
-#[boa_gc(empty_trace)]
-struct WindowProperties;
+#[derive(Trace, Finalize)]
+struct WindowProperties {
+    window: JsObject,
+    reader: GcRefCell<Option<JsObject>>,
+}
 
 impl JsData for WindowProperties {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
         static METHODS: InternalObjectMethods = InternalObjectMethods {
+            __get_own_property__: WindowProperties::get_own_property,
+            named_descriptor_has_effects: true,
             __set_prototype_of__: immutable_prototype_exotic_set_prototype_of,
             __define_own_property__: |_, _, _, _| Ok(false),
             __delete__: |_, _, _| Ok(false),
@@ -79,6 +117,59 @@ impl JsData for WindowProperties {
             ..ORDINARY_INTERNAL_METHODS
         };
         &METHODS
+    }
+}
+
+impl WindowProperties {
+    fn get_own_property(
+        object: &JsObject,
+        key: &PropertyKey,
+        context: &mut InternalMethodPropertyContext<'_>,
+    ) -> JsResult<Option<PropertyDescriptor>> {
+        if matches!(key, PropertyKey::Symbol(_)) {
+            return ordinary_get_own_property(object, key, context);
+        }
+
+        let source = object.downcast_ref::<Self>().and_then(|layer| {
+            layer
+                .reader
+                .borrow()
+                .clone()
+                .map(|reader| (layer.window.clone(), reader))
+        });
+        // A named result (or miss) must never be cached in the ordinary shape.
+        context
+            .slot()
+            .attributes
+            .insert(SlotAttributes::NOT_CACHEABLE);
+        let Some((window, reader)) = source else {
+            return Ok(None);
+        };
+
+        // The Window chain is immutable and these ordinary descriptor probes
+        // cannot call script. Avoid projecting a value that an own property masks.
+        let mut current = Some(window.clone());
+        while let Some(candidate) = current {
+            if !candidate.is::<Self>() && candidate.borrow().properties.get(key).is_some() {
+                return Ok(None);
+            }
+            current = candidate.prototype();
+        }
+
+        let name = match key {
+            PropertyKey::String(name) => name.clone(),
+            PropertyKey::Index(index) => JsString::from(index.get().to_string()),
+            PropertyKey::Symbol(_) => return Ok(None),
+        };
+        let value = reader.call(&window.into(), &[name.into()], context)?;
+        Ok((!value.is_undefined()).then(|| {
+            PropertyDescriptor::builder()
+                .value(value)
+                .writable(true)
+                .enumerable(false)
+                .configurable(true)
+                .build()
+        }))
     }
 }
 

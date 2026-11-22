@@ -96,7 +96,7 @@ impl SetNameByLocator {
                     return Err(uninitialized_global_property(&name));
                 }
 
-                context.global_object().set(name, value, false, context)?;
+                context.set_global_binding_value(name, value, false)?;
                 return Ok(());
             }
         };

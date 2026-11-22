@@ -75,7 +75,7 @@ impl GetNameGlobal {
                 drop(object_borrowed);
                 if slot.attributes.has_get() && result.is_object() {
                     result = result.as_object().expect("should contain getter").call(
-                        &object.clone().into(),
+                        &context.global_binding_receiver(),
                         &[],
                         context,
                     )?;
@@ -89,7 +89,9 @@ impl GetNameGlobal {
             let key: PropertyKey = ic.name.clone().into();
 
             let context = &mut InternalMethodPropertyContext::new(context);
-            let Some(result) = object.__try_get__(&key, object.clone().into(), context)? else {
+            let Some(result) =
+                object.__try_get__(&key, context.global_binding_receiver(), context)?
+            else {
                 let name = binding_locator.name().to_std_string_escaped();
                 return Err(JsNativeError::reference()
                     .with_message(format!("{name} is not defined"))
