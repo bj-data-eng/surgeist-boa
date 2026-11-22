@@ -25,12 +25,10 @@ fn set_by_name(
 
     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
 
-    // Array length writes must reach ArraySetLength. A Proxy can forward the
-    // write, and an alternate receiver can be an array even if the lookup is ordinary.
-    let cacheable = ic.name != StaticJsStrings::LENGTH
-        || (!object.is_array()
-            && !object.is::<Proxy>()
-            && receiver.as_object().as_ref() == Some(&object));
+    // A cached data slot writes to the base or its prototype. An alternate
+    // receiver must go through [[Set]], and array length writes must reach ArraySetLength.
+    let cacheable = receiver.as_object().as_ref() == Some(&object)
+        && (ic.name != StaticJsStrings::LENGTH || (!object.is_array() && !object.is::<Proxy>()));
     let object_borrowed = object.borrow();
     if cacheable && let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
         let slot_index = slot.index as usize;

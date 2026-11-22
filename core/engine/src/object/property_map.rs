@@ -8,10 +8,10 @@ use super::{
     },
 };
 use crate::value::JsVariant;
-use crate::{JsValue, property::PropertyDescriptorBuilder};
+use crate::{JsValue, js_string, property::PropertyDescriptorBuilder};
 use boa_gc::{Finalize, Trace};
 use rustc_hash::FxHashMap;
-use std::{collections::hash_map, iter::FusedIterator};
+use std::{borrow::Cow, collections::hash_map, iter::FusedIterator};
 use thin_vec::ThinVec;
 
 /// This represents all the indexed properties.
@@ -489,6 +489,7 @@ pub struct PropertyMap {
 
     pub(crate) shape: Shape,
     pub(crate) storage: ObjectStorage,
+    numeric_keys_in_shape: bool,
 }
 
 impl PropertyMap {
@@ -500,6 +501,7 @@ impl PropertyMap {
             indexed_properties,
             shape,
             storage: Vec::default(),
+            numeric_keys_in_shape: false,
         }
     }
 
@@ -511,6 +513,7 @@ impl PropertyMap {
             indexed_properties: IndexedProperties::default(),
             shape: UniqueShape::new(prototype, PropertyTableInner::default()).into(),
             storage: Vec::default(),
+            numeric_keys_in_shape: false,
         }
     }
 
@@ -526,12 +529,31 @@ impl PropertyMap {
             indexed_properties: IndexedProperties::default(),
             shape: shape.into(),
             storage: Vec::default(),
+            numeric_keys_in_shape: false,
         }
+    }
+
+    /// Preserve creation order across all string keys on a new named-only platform object.
+    pub(crate) fn preserve_string_key_order(&mut self) {
+        debug_assert!(self.storage.is_empty() && self.indexed_properties.keys().next().is_none());
+        self.numeric_keys_in_shape = true;
+    }
+
+    #[inline]
+    fn storage_key<'key>(&self, key: &'key PropertyKey) -> Cow<'key, PropertyKey> {
+        if let PropertyKey::Index(index) = key
+            && self.numeric_keys_in_shape
+        {
+            return Cow::Owned(PropertyKey::String(js_string!(index.get())));
+        }
+        Cow::Borrowed(key)
     }
 
     /// Get the property with the given key from the [`PropertyMap`].
     #[must_use]
     pub fn get(&self, key: &PropertyKey) -> Option<PropertyDescriptor> {
+        let storage_key = self.storage_key(key);
+        let key = storage_key.as_ref();
         if let PropertyKey::Index(index) = key {
             return self.indexed_properties.get(index.get());
         }
@@ -549,6 +571,8 @@ impl PropertyMap {
         key: &PropertyKey,
         out_slot: &mut Slot,
     ) -> Option<PropertyDescriptor> {
+        let storage_key = self.storage_key(key);
+        let key = storage_key.as_ref();
         if let PropertyKey::Index(index) = key {
             return self.indexed_properties.get(index.get());
         }
@@ -599,6 +623,8 @@ impl PropertyMap {
         property: PropertyDescriptor,
         out_slot: &mut Slot,
     ) -> bool {
+        let storage_key = self.storage_key(key);
+        let key = storage_key.as_ref();
         if let PropertyKey::Index(index) = key {
             return self.indexed_properties.insert(index.get(), property);
         }
@@ -695,6 +721,8 @@ impl PropertyMap {
 
     /// Remove the property with the given key from the [`PropertyMap`].
     pub fn remove(&mut self, key: &PropertyKey) -> bool {
+        let storage_key = self.storage_key(key);
+        let key = storage_key.as_ref();
         if let PropertyKey::Index(index) = key {
             return self.indexed_properties.remove(index.get());
         }
@@ -858,6 +886,8 @@ impl PropertyMap {
     #[inline]
     #[must_use]
     pub fn contains_key(&self, key: &PropertyKey) -> bool {
+        let storage_key = self.storage_key(key);
+        let key = storage_key.as_ref();
         if let PropertyKey::Index(index) = key {
             return self.indexed_properties.contains_key(index.get());
         }

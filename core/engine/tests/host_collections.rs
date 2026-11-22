@@ -2,8 +2,11 @@
 //! Property operations on native legacy collection objects.
 
 use boa_engine::{
-    Context, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
-    object::host::{IndexedProperties, readonly_indexed},
+    Context, JsError, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
+    object::host::{
+        IndexedProperties, NamedOverrideProperties, named_override, named_override_source,
+        readonly_indexed,
+    },
     property::Attribute,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
@@ -71,6 +74,258 @@ fn register_collection(context: &mut Context, names: Vec<JsString>) -> Collectio
         .register_global_property(js_string!("collection"), collection, Attribute::all())
         .unwrap();
     source
+}
+
+impl NamedOverrideProperties for Collection {
+    fn named_keys(&self, holder: &JsObject, context: &mut Context) -> JsResult<Vec<JsString>> {
+        IndexedProperties::named_keys(self, holder, context)
+    }
+
+    fn named_value(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        context: &mut Context,
+    ) -> JsResult<Option<JsValue>> {
+        if *name == js_string!("providerError")
+            && IndexedProperties::named_present(self, holder, name, context)?
+        {
+            let error = context
+                .global_object()
+                .get(js_string!("nativeError"), context)?;
+            return Err(JsError::from_opaque(error));
+        }
+        IndexedProperties::named_value(self, holder, name, context)
+    }
+
+    fn named_present(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        context: &mut Context,
+    ) -> JsResult<bool> {
+        IndexedProperties::named_present(self, holder, name, context)
+    }
+
+    fn is_unforgeable_name(&self, name: &JsString) -> bool {
+        *name == js_string!("unforgeable")
+    }
+}
+
+fn register_named_override(context: &mut Context, names: Vec<JsString>) -> JsResult<Collection> {
+    let source = Collection::new(names);
+    let prototype = JsObject::with_object_proto(context.intrinsics());
+    let host = named_override(context.root_shape(), Some(prototype), source.clone());
+    assert!(named_override_source::<Collection>(&host).is_some());
+    context.register_global_property(js_string!("host"), host, Attribute::all())?;
+    context.register_global_builtin_callable(
+        js_string!("supportName"),
+        1,
+        NativeFunction::from_copy_closure_with_captures(
+            |_, args, names, _| {
+                let name = args.first().and_then(JsValue::as_string).unwrap();
+                names.borrow_mut().push(name);
+                Ok(JsValue::undefined())
+            },
+            source.names.clone(),
+        ),
+    )?;
+    Ok(source)
+}
+
+#[test]
+fn named_override_uses_exact_names_and_ordinary_creation_order() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_named_override(
+        &mut context,
+        ["first", "99", "0", "01", "4294967295", "99"]
+            .into_iter()
+            .map(JsString::from)
+            .collect(),
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        const prototype = Object.getPrototypeOf(host);
+        prototype.first = "inherited";
+        prototype[99] = "inherited";
+        const sym = Symbol("ordinary");
+        host[8] = "eight"; host[sym] = "symbol"; host.middle = "middle"; host[2] = "two";
+        const keys = Reflect.ownKeys(new Proxy(host, {}));
+        const descriptor = Object.getOwnPropertyDescriptor(host, 99);
+        [
+            host.first === "native" && host[99] === "native" && host[0] === "native"
+                && host["01"] === "native" && host["4294967295"] === "native",
+            descriptor?.value === "native" && !descriptor.writable
+                && descriptor.enumerable && descriptor.configurable,
+            keys.slice(0, -1).join() === "first,99,0,01,4294967295,8,middle,2"
+                && keys.at(-1) === sym && host[2] === "two",
+            Reflect.deleteProperty(host, 8) && Reflect.set(host, 8, "re-added")
+                && Object.keys(host).join() === "first,99,0,01,4294967295,middle,2,8",
+            !Reflect.preventExtensions(host) && Object.isExtensible(host)
+        ].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("true;true;true;true;true"))
+    );
+    source
+        .names
+        .borrow_mut()
+        .retain(|name| *name != js_string!("99"));
+    let after = context.eval(Source::from_bytes(
+        r#"host[99] === "inherited" && !Object.hasOwn(host, 99)"#,
+    ))?;
+    assert_eq!(after.as_boolean(), Some(true));
+    Ok(())
+}
+
+#[test]
+fn named_override_keeps_live_write_decisions_and_ordinary_receivers() -> JsResult<()> {
+    let mut context = Context::default();
+    register_named_override(&mut context, vec![js_string!("named")])?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        const prototype = Object.getPrototypeOf(host);
+        prototype.inherited = 1;
+        const read = () => host.inherited;
+        function write(value) { "use strict"; host.warm = value; }
+        let warm = true;
+        for (let n = 0; n < 32; ++n) {
+            warm &&= read() === 1;
+            write(n);
+        }
+        supportName("inherited");
+        supportName("warm");
+        let refused = false;
+        try { write(33); } catch (err) { refused = err instanceof TypeError; }
+        const overrideRead = warm && read() === "native";
+        const ownRemained = refused && host.warm === 31
+            && !Reflect.defineProperty(host, "warm", {value: 34})
+            && Reflect.deleteProperty(host, "warm") && host.warm === "native";
+
+        Object.defineProperty(host, "unforgeable", {value: 1, writable: true});
+        supportName("unforgeable");
+        const unforgeable = Reflect.defineProperty(host, "unforgeable", {value: 2})
+            && host.unforgeable === 2 && !Reflect.deleteProperty(host, "unforgeable");
+
+        let setterReceiver;
+        Object.defineProperty(prototype, "named", {set(_) { setterReceiver = this; }});
+        const alternate = {};
+        const setter = Reflect.set(host, "named", 3, alternate) && setterReceiver === alternate;
+        const descendant = Object.create(host);
+        const own = Reflect.set(host, "warm", 5, descendant)
+            && descendant.warm === 5 && host.warm === "native";
+
+        let descriptorConversions = 0;
+        const reentered = !Reflect.defineProperty(host, 42, {get value() {
+            ++descriptorConversions;
+            supportName("42");
+            return 7;
+        }}) && descriptorConversions === 1 && host[42] === "native";
+
+        const sentinel = {};
+        Object.setPrototypeOf(host, new Proxy(prototype, {
+            getOwnPropertyDescriptor() { throw sentinel; },
+            get() { throw sentinel; },
+            has() { throw sentinel; }
+        }));
+        let ordinaryThrow = false;
+        try { void host.absent; } catch (err) { ordinaryThrow = err === sentinel; }
+        const skipPrototype = host.named === "native" && Object.hasOwn(host, "named")
+            && Reflect.has(host, 42) && !Reflect.deleteProperty(host, "named")
+            && !Reflect.defineProperty(host, "named", {value: 8}) && ordinaryThrow;
+        [overrideRead, ownRemained, unforgeable, setter, own, reentered, skipPrototype].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("true;true;true;true;true;true;true"))
+    );
+    Ok(())
+}
+
+#[test]
+fn named_override_inherited_read_resolves_again_after_own_deletion() -> JsResult<()> {
+    let mut context = Context::default();
+    register_named_override(&mut context, Vec::new())?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        host.switchable = "own";
+        host.spare = "spare";
+        const child = Object.create(host);
+        const ordinary = {switchable: "ordinary"};
+        const ordinaryChild = Object.create(ordinary);
+        const read = object => object.switchable;
+        for (let n = 0; n < 32; ++n) {
+            if (read(child) !== "own" || read(ordinaryChild) !== "ordinary") throw Error("warm read");
+        }
+        const deleted = Reflect.deleteProperty(host, "switchable");
+        supportName("switchable");
+        ordinary.switchable = "changed ordinary";
+        [deleted, Reflect.get(child, "switchable"), read(child), read(ordinaryChild)].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("true;native;native;changed ordinary")),
+    );
+    Ok(())
+}
+
+#[test]
+fn named_override_has_property_preserves_the_selected_getter_error() -> JsResult<()> {
+    let mut context = Context::default();
+    register_named_override(
+        &mut context,
+        vec![js_string!("present"), js_string!("providerError")],
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        globalThis.nativeError = {};
+        Object.getPrototypeOf(host).inherited = 3;
+        let thrown = false;
+        try { Reflect.has(host, "providerError"); } catch (err) { thrown = err === nativeError; }
+        [
+            "present" in host && !("missing" in host) && "inherited" in host,
+            thrown,
+            !Reflect.defineProperty(host, "providerError", {value: 1}),
+            !Reflect.deleteProperty(host, "providerError")
+        ].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("true;true;true;true"))
+    );
+    Ok(())
+}
+
+#[test]
+fn named_override_super_write_uses_the_actual_receiver_after_warming() -> JsResult<()> {
+    let mut context = Context::default();
+    register_named_override(&mut context, vec![js_string!("blocked")])?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        const base = {blocked: -1};
+        const write = {__proto__: base, write(value) { "use strict"; super.blocked = value; }}.write;
+        for (let n = 0; n < 32; ++n) {
+            Reflect.apply(write, base, [n]);
+        }
+        if (base.blocked !== 31) throw Error("warm write");
+        const ordinary = {};
+        Reflect.apply(write, ordinary, [32]);
+        const ordinaryCorrect = ordinary.blocked === 32 && base.blocked === 31;
+        let refused = false;
+        try { Reflect.apply(write, host, [33]); } catch (err) { refused = err instanceof TypeError; }
+        [ordinaryCorrect, refused, host.blocked, base.blocked].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("true;true;native;31"))
+    );
+    Ok(())
 }
 
 #[test]
