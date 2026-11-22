@@ -63,14 +63,8 @@ impl GetNameGlobal {
             let ic = &context.vm.frame().code_block().ic[usize::from(ic_index)];
 
             let object_borrowed = object.borrow();
-            if let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
-                let mut result = if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-                    let prototype = shape.prototype().expect("prototype should have value");
-                    let prototype = prototype.borrow();
-                    prototype.properties().storage[slot.index as usize].clone()
-                } else {
-                    object_borrowed.properties().storage[slot.index as usize].clone()
-                };
+            if let Some((_, slot)) = ic.get(object_borrowed.shape()) {
+                let mut result = object_borrowed.properties().storage[slot.index as usize].clone();
 
                 drop(object_borrowed);
                 if slot.attributes.has_get() && result.is_object() {
@@ -98,9 +92,10 @@ impl GetNameGlobal {
                     .into());
             };
 
-            // Cache the property.
+            // The cache guards the global's shape. An inherited descriptor
+            // can change while that shape remains the same.
             let slot = *context.slot();
-            if slot.is_cacheable() {
+            if slot.is_cacheable() && !slot.attributes.contains(SlotAttributes::PROTOTYPE) {
                 let ic = &context.vm.frame().code_block.ic[usize::from(ic_index)];
                 let object_borrowed = object.borrow();
                 let shape = object_borrowed.shape();
