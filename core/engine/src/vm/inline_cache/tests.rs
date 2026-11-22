@@ -1,8 +1,10 @@
 use boa_gc::Gc;
+use boa_macros::js_str;
 use boa_parser::Source;
+use indoc::indoc;
 
 use crate::{
-    Context, JsObject, JsResult, JsValue,
+    Context, JsObject, JsResult, JsValue, TestAction,
     builtins::{OrdinaryObject, function::OrdinaryFunction},
     js_string,
     object::{
@@ -10,6 +12,7 @@ use crate::{
         shape::slot::SlotAttributes,
     },
     property::{Attribute, PropertyDescriptor, PropertyKey},
+    run_test_actions,
     vm::CodeBlock,
 };
 
@@ -463,5 +466,93 @@ fn test_megamorphic_inline_cache() -> JsResult<()> {
     assert_eq!(code.ic[0].entries.borrow().len(), 0);
     assert!(code.ic[0].megamorphic.get());
 
+    Ok(())
+}
+
+#[test]
+fn prototype_getter_that_shadows_itself_runs_once() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            var loads = 0;
+            var proto = {};
+            Object.defineProperty(proto, 'value', {
+                get: function() {
+                    loads++;
+                    Object.defineProperty(this, 'value', { value: 42, writable: true });
+                    return this.value;
+                }
+            });
+            function getValue(obj) { return obj.value; }
+            var obj = Object.create(proto);
+            getValue(obj);
+            getValue(obj);
+            getValue(obj);
+            loads;
+        "#},
+        1,
+    )]);
+}
+
+#[test]
+fn prototype_setter_that_shadows_itself_runs_once() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            var stores = 0;
+            var proto = {};
+            Object.defineProperty(proto, 'value', {
+                set: function(value) {
+                    stores++;
+                    Object.defineProperty(this, 'value', { value: value, writable: true });
+                }
+            });
+            function setValue(obj, value) { obj.value = value; }
+            var obj = Object.create(proto);
+            setValue(obj, 1);
+            setValue(obj, 2);
+            setValue(obj, 3);
+            [stores, obj.value].join();
+        "#},
+        js_str!("1,3"),
+    )]);
+}
+
+#[test]
+fn prototype_accessors_can_shadow_themselves_after_unique_shape_warmup() -> JsResult<()> {
+    let context = &mut Context::default();
+    let receiver = context.eval(Source::from_bytes(indoc! {r#"
+        let loads = 0;
+        let stores = 0;
+        const receiver = Object.create({
+            get readValue() {
+                if (++loads === 2) {
+                    Object.defineProperty(this, "readValue", { value: 42, writable: true });
+                }
+                return loads;
+            },
+            set writeValue(value) {
+                if (++stores === 2) {
+                    Object.defineProperty(this, "writeValue", { value, writable: true });
+                }
+            }
+        });
+        for (let index = 0; index < 1024; index++) {
+            receiver["padding" + index] = index;
+        }
+        receiver;
+    "#}))?;
+    assert!(receiver.as_object().unwrap().borrow().shape().is_unique());
+
+    let observed = context.eval(Source::from_bytes(indoc! {r#"
+        function read(object) { return object.readValue; }
+        function write(object, value) { object.writeValue = value; }
+        const first = read(receiver);
+        const second = read(receiver);
+        const third = read(receiver);
+        write(receiver, 1);
+        write(receiver, 2);
+        write(receiver, 3);
+        [first, second, third, loads, receiver.writeValue, stores].join();
+    "#}))?;
+    assert_eq!(observed, js_str!("1,2,42,2,3,2").into());
     Ok(())
 }
