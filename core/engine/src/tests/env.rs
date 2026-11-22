@@ -200,3 +200,77 @@ fn eval_created_bindings_can_be_deleted_5333() {
         ),
     ]);
 }
+
+#[test]
+// https://github.com/boa-dev/boa/issues/5332
+fn direct_eval_bindings_are_local_to_each_call() {
+    run_test_actions([
+        TestAction::run("function run(source) { return eval(source); }"),
+        TestAction::assert_eq(
+            r#"run("eval('var evalLocal = 1;'); typeof evalLocal")"#,
+            js_str!("number"),
+        ),
+        TestAction::assert_eq(r#"run("typeof evalLocal")"#, js_str!("undefined")),
+    ]);
+}
+
+#[test]
+// https://github.com/boa-dev/boa/issues/5332
+fn direct_eval_bindings_are_local_to_each_function_instance() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            function makeRun(label) {
+                return function(source) {
+                    return label + ":" + eval(source);
+                };
+            }
+            let first = makeRun("first");
+            let second = makeRun("second");
+            [
+                first("eval('var evalLocal = 1;'); typeof evalLocal"),
+                second("typeof evalLocal"),
+            ].join(",");
+        "#},
+        js_str!("first:number,second:undefined"),
+    )]);
+}
+
+#[test]
+fn direct_eval_bindings_remain_live_in_closures() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            function capture(label) {
+                let count = 0;
+                const next = () => label + ":" + ++count + ":" + evalLocal;
+                eval("var evalLocal = label;");
+                eval("evalLocal += '!';");
+                return next;
+            }
+            let first = capture("first");
+            let second = capture("second");
+            [first(), first(), second(), first()].join(",");
+        "#},
+        js_str!("first:1:first!,first:2:first!,second:1:second!,first:3:first!"),
+    )]);
+}
+
+#[test]
+fn direct_eval_bindings_can_shadow_an_outer_constant() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            const evalLocal = "outer";
+            function run(declare) {
+                const read = () => eval("evalLocal");
+                const increment = () => eval("evalLocal += 1; evalLocal");
+                if (!declare) {
+                    return read();
+                }
+                eval("var evalLocal = 1;");
+                const current = eval("evalLocal += 1; evalLocal");
+                return [current, increment()].join(",");
+            }
+            [run(true), run(false), evalLocal].join(",");
+        "#},
+        js_str!("2,3,outer,outer"),
+    )]);
+}
