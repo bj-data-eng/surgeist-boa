@@ -816,18 +816,23 @@ pub(crate) fn ordinary_set(
     receiver: JsValue,
     context: &mut InternalMethodPropertyContext<'_>,
 ) -> JsResult<bool> {
-    // 1. Assert: IsPropertyKey(P) is true.
     // 2. Let ownDesc be ? O.[[GetOwnProperty]](P).
+    let own_desc = obj.__get_own_property__(&key, context)?;
     // 3. Return OrdinarySetWithOwnDescriptor(O, P, V, Receiver, ownDesc).
+    ordinary_set_with_own_descriptor(obj, key, value, receiver, own_desc, context)
+}
 
-    // OrdinarySetWithOwnDescriptor ( O, P, V, Receiver, ownDesc )
-    // https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-ordinarysetwithowndescriptor
-
-    let mut has_own_desc = false;
-
-    // 1. Assert: IsPropertyKey(P) is true.
-    let own_desc = if let Some(desc) = obj.__get_own_property__(&key, context)? {
-        has_own_desc = true;
+/// Abstract operation [`OrdinarySetWithOwnDescriptor`](https://tc39.es/ecma262/#sec-ordinarysetwithowndescriptor).
+pub(crate) fn ordinary_set_with_own_descriptor(
+    obj: &JsObject,
+    key: PropertyKey,
+    value: JsValue,
+    receiver: JsValue,
+    own_desc: Option<PropertyDescriptor>,
+    context: &mut InternalMethodPropertyContext<'_>,
+) -> JsResult<bool> {
+    let has_own_desc = own_desc.is_some();
+    let own_desc = if let Some(desc) = own_desc {
         desc
     }
     // 2. If ownDesc is undefined, then
