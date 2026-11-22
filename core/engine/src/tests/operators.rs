@@ -551,6 +551,86 @@ fn assignmentoperator_lhs_not_defined() {
 }
 
 #[test]
+fn assignment_to_unresolvable_global_throws_after_rhs_in_strict_mode() {
+    run_test_actions([
+        TestAction::assert(indoc! {r#"
+            "use strict";
+            let threw = false;
+            try {
+                undeclared = (this.undeclared = 5, 9);
+            } catch (error) {
+                threw = error instanceof ReferenceError;
+            }
+            threw
+        "#}),
+        TestAction::assert_eq("globalThis.undeclared", 5),
+    ]);
+}
+
+#[test]
+fn assignment_to_resolvable_global_and_sloppy_unresolvable_global_succeeds() {
+    run_test_actions([
+        TestAction::run("globalThis.existingGlobal = 1"),
+        TestAction::assert_eq(
+            r#""use strict"; existingGlobal = (globalThis.existingGlobal = 5, 9)"#,
+            9,
+        ),
+        TestAction::assert_eq("globalThis.existingGlobal", 9),
+        TestAction::assert_eq("undeclared = (globalThis.undeclared = 5, 9)", 9),
+        TestAction::assert_eq("globalThis.undeclared", 9),
+    ]);
+}
+
+#[test]
+fn assignment_keeps_its_reference_across_rhs_assignments() {
+    run_test_actions([
+        TestAction::run("globalThis.existingGlobal = 1"),
+        TestAction::assert(indoc! {r#"
+            "use strict";
+            let threw = false;
+            try {
+                undeclared = (
+                    existingGlobal ||= 7,
+                    (() => { existingGlobal = 3; })(),
+                    globalThis.undeclared = 5,
+                    9
+                );
+            } catch (error) {
+                threw = error instanceof ReferenceError;
+            }
+            threw
+        "#}),
+        TestAction::assert_eq("globalThis.undeclared", 5),
+        TestAction::assert_eq("globalThis.existingGlobal", 3),
+    ]);
+}
+
+#[test]
+fn assignment_propagates_rhs_abrupt_completion_before_unresolvable_reference_error() {
+    run_test_actions([
+        TestAction::assert_eq(
+            indoc! {r#"
+                "use strict";
+                const marker = {};
+                let caught;
+                try {
+                    undeclared = (() => {
+                        globalThis.undeclared = 5;
+                        throw marker;
+                    })();
+                } catch (error) {
+                    caught = error;
+                }
+                caught === marker
+            "#},
+            true,
+        ),
+        TestAction::assert_eq("globalThis.undeclared", 5),
+        TestAction::assert_eq(r#""use strict"; undeclared = 9"#, 9),
+    ]);
+}
+
+#[test]
 fn assignmentoperator_rhs_throws_error() {
     run_test_actions([TestAction::assert_native_error(
         "let a; a += b",
@@ -949,4 +1029,16 @@ fn instanceof_custom_has_instance() {
             !({} instanceof Falsy)
         "#}),
     ]);
+}
+
+#[test]
+fn assignment_preserves_resolved_with_target_when_rhs_deletes_it() {
+    run_test_actions([TestAction::assert(indoc! {r#"
+        globalThis.target = 1;
+        const scope = { target: 2 };
+        with (scope) {
+            target = (delete scope.target, 9);
+        }
+        globalThis.target === 1 && scope.target === 9
+    "#})]);
 }
