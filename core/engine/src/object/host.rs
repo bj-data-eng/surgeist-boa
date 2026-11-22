@@ -258,7 +258,18 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
             // Web IDL legacy platform object [[Set]] requests the target
             // descriptor with ignoreNamedProps set to true.
             let own_desc = ordinary_get_own_property(object, &key, context)?;
-            ordinary_set_with_own_descriptor(object, key, value, receiver, own_desc, context)
+            let has_own_desc = own_desc.is_some();
+            let result =
+                ordinary_set_with_own_descriptor(object, key, value, receiver, own_desc, context);
+            if !has_own_desc {
+                // A prototype setter can install an own property during the
+                // write. Do not cache that slot against the collection's shape.
+                context
+                    .slot()
+                    .attributes
+                    .insert(SlotAttributes::NOT_CACHEABLE);
+            }
+            result
         } else {
             ordinary_set(object, key, value, receiver, context)
         }
