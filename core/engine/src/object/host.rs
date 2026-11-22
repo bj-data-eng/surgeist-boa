@@ -42,9 +42,9 @@ pub fn immutable_prototype(root_shape: &RootShape, prototype: JsPrototype) -> Js
 
 /// Creates the named-properties layer for the associated Window.
 ///
-/// The Window and its prototype chain must use ordinary own descriptors, apart
-/// from this named-properties layer. Install the native name reader before
-/// exposing the Window to scripts.
+/// Give the Window an immutable prototype chain with ordinary descriptors and
+/// ordinary prototype reads, apart from this named-properties layer. Install
+/// the native name reader before exposing the Window to scripts.
 #[must_use]
 pub fn window_properties(
     root_shape: &RootShape,

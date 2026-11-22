@@ -78,6 +78,7 @@ impl GetNameGlobal {
                 return Ok(());
             }
 
+            let initial_shape = object_borrowed.shape().clone();
             drop(object_borrowed);
 
             let key: PropertyKey = ic.name.clone().into();
@@ -97,9 +98,7 @@ impl GetNameGlobal {
             let slot = *context.slot();
             if slot.is_cacheable() && !slot.attributes.contains(SlotAttributes::PROTOTYPE) {
                 let ic = &context.vm.frame().code_block.ic[usize::from(ic_index)];
-                let object_borrowed = object.borrow();
-                let shape = object_borrowed.shape();
-                ic.set(shape, slot);
+                ic.set_after_access(&initial_shape, object.borrow().shape(), slot);
             }
 
             context.vm.set_register(dst.into(), result);
