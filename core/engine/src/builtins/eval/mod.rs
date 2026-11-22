@@ -241,7 +241,7 @@ impl Eval {
             }
         });
 
-        let (var_environment, mut variable_scope) =
+        let (var_environment, variable_scope) =
             if let Some(e) = context.vm.frame().environments.outer_function_environment() {
                 (e.0, e.1)
             } else {
@@ -251,7 +251,12 @@ impl Eval {
                 )
             };
 
-        let lexical_scope = lexical_scope.unwrap_or(context.realm().scope().clone());
+        let lexical_scope = lexical_scope.unwrap_or_else(|| context.realm().scope().clone());
+        let (lexical_scope, mut variable_scope) = context
+            .vm
+            .frame()
+            .environments
+            .rebase_eval_scopes(lexical_scope, variable_scope, strict)?;
         let lexical_scope = Scope::new(lexical_scope, strict);
 
         let mut annex_b_function_names = Vec::new();
@@ -322,10 +327,9 @@ impl Eval {
 
         let code_block = Gc::new(compiler.finish());
 
-        // Strict calls don't need extensions, since all strict eval calls push a new
-        // function environment before evaluating.
-        if !strict {
-            var_environment.extend_from_compile();
+        // A sloppy direct eval can add bindings to the caller's function environment.
+        if !strict && let Some(function) = var_environment.kind().as_function() {
+            function.extend_from_eval(variable_scope);
         }
 
         let env_fp = context.vm.frame().environments.len() as u32;

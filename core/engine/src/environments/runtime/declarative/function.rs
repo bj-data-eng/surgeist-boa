@@ -1,6 +1,6 @@
 use boa_ast::scope::Scope;
 use boa_gc::{Finalize, GcRefCell, Trace, custom_trace};
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 
 use crate::{JsNativeError, JsObject, JsResult, JsValue, builtins::function::OrdinaryFunction};
 
@@ -15,7 +15,7 @@ pub(crate) struct FunctionEnvironment {
 
     // Safety: Nothing in `Scope` needs tracing.
     #[unsafe_ignore_trace]
-    scope: Scope,
+    scope: RefCell<Scope>,
 }
 
 impl FunctionEnvironment {
@@ -26,7 +26,7 @@ impl FunctionEnvironment {
             deletable_bindings: RefCell::new(vec![false; bindings_count as usize]),
             deleted_bindings: RefCell::new(vec![false; bindings_count as usize]),
             slots: Box::new(slots),
-            scope,
+            scope: RefCell::new(scope),
         }
     }
 
@@ -36,8 +36,8 @@ impl FunctionEnvironment {
     }
 
     /// Gets the compile time environment of this function environment.
-    pub(crate) const fn compile(&self) -> &Scope {
-        &self.scope
+    pub(crate) fn compile(&self) -> Ref<'_, Scope> {
+        self.scope.borrow()
     }
 
     /// Gets the binding value from the environment by it's index.
@@ -60,8 +60,10 @@ impl FunctionEnvironment {
         self.bindings.borrow_mut()[index as usize] = Some(value);
     }
 
-    pub(crate) fn extend_from_compile(&self) {
-        let compile_bindings_len = self.scope.num_bindings() as usize;
+    /// Installs the binding metadata produced by eval and reserves its runtime slots.
+    pub(crate) fn extend_from_eval(&self, scope: Scope) {
+        let compile_bindings_len = scope.num_bindings() as usize;
+        self.scope.replace(scope);
         let mut bindings = self.bindings.borrow_mut();
         let bindings_len = bindings.len();
 

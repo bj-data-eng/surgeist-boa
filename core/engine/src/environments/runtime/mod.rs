@@ -1,5 +1,5 @@
 use crate::{
-    Context, JsResult, JsString, JsSymbol, JsValue,
+    Context, JsExpect, JsResult, JsString, JsSymbol, JsValue,
     object::{JsObject, PrivateName},
 };
 use boa_ast::scope::{BindingLocator, BindingLocatorScope, Scope};
@@ -95,6 +95,48 @@ impl EnvironmentStack {
             }
         }
         None
+    }
+
+    /// Rebuild the eval scope chain using the lexical environments of this activation.
+    pub(crate) fn rebase_eval_scopes(
+        &self,
+        lexical_scope: Scope,
+        variable_scope: Scope,
+        strict: bool,
+    ) -> JsResult<(Scope, Scope)> {
+        let Some(variable_parent) = variable_scope.outer() else {
+            return Ok((lexical_scope, variable_scope));
+        };
+
+        let mut function_environments = self
+            .iter_from_tip()
+            .filter_map(|(env, _)| env.as_declarative()?.kind().as_function())
+            .peekable();
+        let mut scopes = Vec::new();
+        let mut scope = &lexical_scope;
+        while let Some(outer) = scope.outer() {
+            let live_scope = function_environments
+                .next_if(|env| env.compile().has_same_origin(scope))
+                .map_or_else(|| scope.clone(), |env| env.compile().clone());
+            scopes.push(live_scope);
+            scope = outer;
+        }
+
+        let mut lexical_scope = scope.clone();
+        let mut eval_variable_scope = None;
+        for scope in scopes.into_iter().rev() {
+            let is_variable_scope = !strict && scope.has_same_origin(&variable_scope);
+            lexical_scope = scope
+                .rebase_for_eval(lexical_scope, is_variable_scope)
+                .js_expect("eval lexical scope parent must have the same origin")?;
+            if is_variable_scope {
+                eval_variable_scope = Some(lexical_scope.clone());
+            }
+        }
+        let variable_scope = eval_variable_scope
+            .or_else(|| variable_scope.rebase_for_eval(variable_parent.clone(), !strict))
+            .js_expect("eval variable scope parent must have the same origin")?;
+        Ok((lexical_scope, variable_scope))
     }
 
     /// Save all current environments and clear the stack.
@@ -517,7 +559,8 @@ impl Context {
             && let Environment::Declarative(env) = self.environment_expect(index)
             && let Some(function_env) = env.kind().as_function()
         {
-            let mut scope = function_env.compile().outer();
+            let compile_scope = function_env.compile();
+            let mut scope = compile_scope.outer();
             while let Some(current_scope) = scope {
                 if let Some(binding) = current_scope.get_binding(locator.name()) {
                     locator.set_scope(binding.scope());
