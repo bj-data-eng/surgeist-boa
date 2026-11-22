@@ -142,6 +142,41 @@ impl Scope {
         }
     }
 
+    /// Rebuilds this scope over the live outer scope for direct eval.
+    ///
+    /// Set `isolate_bindings` when eval can add declarations to this scope. The
+    /// copy keeps its binding locators compatible with the existing runtime slots.
+    ///
+    /// Returns `None` if this scope has no parent or `outer` has a different
+    /// origin from the current parent.
+    #[must_use]
+    pub fn rebase_for_eval(&self, outer: Self, isolate_bindings: bool) -> Option<Self> {
+        let parent = self
+            .outer()
+            .filter(|parent| parent.has_same_origin(&outer))?;
+        if !isolate_bindings && Rc::ptr_eq(&parent.inner, &outer.inner) {
+            return Some(self.clone());
+        }
+        Some(Self {
+            inner: Rc::new(Inner {
+                unique_id: self.inner.unique_id,
+                outer: Some(outer),
+                index: self.inner.index.clone(),
+                bindings: self.inner.bindings.clone(),
+                function: self.inner.function,
+                this_escaped: self.inner.this_escaped.clone(),
+                context: self.inner.context.clone(),
+            }),
+        })
+    }
+
+    /// Checks if two copies belong to the same scope in the originating AST.
+    #[must_use]
+    pub fn has_same_origin(&self, other: &Self) -> bool {
+        self.inner.unique_id == other.inner.unique_id
+            && Rc::ptr_eq(&self.inner.context, &other.inner.context)
+    }
+
     /// Checks if the scope has only local bindings.
     #[must_use]
     pub fn all_bindings_local(&self) -> bool {
