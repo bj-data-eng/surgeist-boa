@@ -360,6 +360,7 @@ impl CodeBlock {
                 | Instruction::GetPrototype { .. }
                 | Instruction::IsObject { .. }
                 | Instruction::SetNameByLocator { .. }
+                | Instruction::PopBinding
                 | Instruction::PushObjectEnvironment { .. }
                 | Instruction::PopPrivateEnvironment
                 | Instruction::ImportCall { .. }
@@ -432,8 +433,7 @@ impl CodeBlock {
                 | Instruction::Reserved55
                 | Instruction::Reserved56
                 | Instruction::Reserved57
-                | Instruction::Reserved58
-                | Instruction::Reserved59 => unreachable!("Reserved opcodes are unreachable"),
+                | Instruction::Reserved58 => unreachable!("Reserved opcodes are unreachable"),
             }
         }
 

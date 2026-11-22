@@ -1,9 +1,12 @@
 use boa_ast::scope::{BindingLocator, BindingLocatorScope};
 
 use crate::{
-    Context, JsError, JsExpect, JsNativeError, JsResult,
+    Context, JsError, JsNativeError, JsResult, JsString,
     environments::Environment,
-    vm::opcode::{IndexOperand, Operation, RegisterOperand},
+    vm::{
+        call_frame::BindingReference,
+        opcode::{IndexOperand, Operation, RegisterOperand},
+    },
 };
 
 /// `ThrowMutateImmutable` implements the Opcode Operation for `Opcode::ThrowMutateImmutable`
@@ -74,7 +77,7 @@ impl Operation for SetName {
 /// `SetNameByLocator` implements the Opcode Operation for `Opcode::SetNameByLocator`
 ///
 /// Operation:
-///  - Assigns a value to the binding pointed by the `current_binding` of the current frame.
+///  - Assigns a value using the pending reference in the current frame.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SetNameByLocator;
 
@@ -83,11 +86,20 @@ impl SetNameByLocator {
     pub(crate) fn operation(value: RegisterOperand, context: &mut Context) -> JsResult<()> {
         let frame = context.vm.frame_mut();
         let strict = frame.code_block.strict();
-        let mut binding_locator = frame
-            .binding_stack
-            .pop()
-            .js_expect("locator should have been popped before")?;
+        let reference = frame.pop_binding()?;
         let value = context.vm.get_register(value.into()).clone();
+
+        let mut binding_locator = match reference {
+            BindingReference::Resolved(locator) => locator,
+            BindingReference::UnresolvableGlobal(name) => {
+                if strict {
+                    return Err(uninitialized_global_property(&name));
+                }
+
+                context.global_object().set(name, value, false, context)?;
+                return Ok(());
+            }
+        };
 
         if context.is_deleted_binding(&binding_locator) {
             context.find_runtime_binding(&mut binding_locator)?;
@@ -107,6 +119,33 @@ impl Operation for SetNameByLocator {
     const COST: u8 = 4;
 }
 
+/// Discards a saved reference when a logical assignment skips its write.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PopBinding;
+
+impl PopBinding {
+    #[inline(always)]
+    pub(crate) fn operation((): (), context: &mut Context) -> JsResult<()> {
+        context.vm.frame_mut().pop_binding()?;
+        Ok(())
+    }
+}
+
+impl Operation for PopBinding {
+    const NAME: &'static str = "PopBinding";
+    const INSTRUCTION: &'static str = "INST - PopBinding";
+    const COST: u8 = 1;
+}
+
+fn uninitialized_global_property(key: &JsString) -> JsError {
+    JsNativeError::reference()
+        .with_message(format!(
+            "cannot assign to uninitialized global property `{}`",
+            key.to_std_string_escaped()
+        ))
+        .into()
+}
+
 /// Checks that the binding pointed by `locator` exists and is initialized.
 fn verify_initialized(locator: &BindingLocator, context: &mut Context) -> JsResult<()> {
     if !context.is_initialized_binding(locator)? {
@@ -114,10 +153,9 @@ fn verify_initialized(locator: &BindingLocator, context: &mut Context) -> JsResu
         let strict = context.vm.frame().code_block.strict();
 
         let message = match locator.scope() {
-            BindingLocatorScope::GlobalObject if strict => Some(format!(
-                "cannot assign to uninitialized global property `{}`",
-                key.to_std_string_escaped()
-            )),
+            BindingLocatorScope::GlobalObject if strict => {
+                return Err(uninitialized_global_property(key));
+            }
             BindingLocatorScope::GlobalObject => None,
             BindingLocatorScope::GlobalDeclarative => Some(format!(
                 "cannot assign to uninitialized binding `{}`",

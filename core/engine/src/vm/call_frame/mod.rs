@@ -4,7 +4,7 @@
 
 use super::ActiveRunnable;
 use crate::{
-    JsValue,
+    JsExpect, JsResult, JsValue,
     builtins::iterable::IteratorRecord,
     bytecompiler::Register,
     environments::EnvironmentStack,
@@ -43,6 +43,19 @@ pub struct CallFrameLocation {
     pub position: Option<Position>,
 }
 
+/// The result of resolving the left-hand side of an assignment.
+#[derive(Clone, Debug)]
+pub(crate) enum BindingReference {
+    Resolved(BindingLocator),
+    UnresolvableGlobal(JsString),
+}
+
+#[derive(Clone, Debug)]
+struct PendingBinding {
+    reference: BindingReference,
+    pc: u32,
+}
+
 /// A `CallFrame` holds the state of a function call.
 #[derive(Clone, Debug, Finalize, Trace)]
 pub struct CallFrame {
@@ -61,9 +74,9 @@ pub struct CallFrame {
     pub(crate) iterators: ThinVec<IteratorRecord>,
 
     // The stack of bindings being updated.
-    // SAFETY: Nothing in `BindingLocator` requires tracing, so this is safe.
+    // SAFETY: Pending bindings contain only locators, strings, and bytecode offsets.
     #[unsafe_ignore_trace]
-    pub(crate) binding_stack: ThinVec<BindingLocator>,
+    binding_stack: ThinVec<PendingBinding>,
 
     /// How many iterations a loop has done.
     pub(crate) loop_iteration_count: u64,
@@ -155,6 +168,32 @@ impl CallFrame {
             environments,
             realm,
             flags: CallFrameFlags::empty(),
+        }
+    }
+
+    pub(crate) fn push_binding(&mut self, reference: BindingReference) {
+        self.binding_stack.push(PendingBinding {
+            reference,
+            // The instruction decoder has already advanced past the resolving instruction.
+            pc: self.pc - 1,
+        });
+    }
+
+    pub(crate) fn pop_binding(&mut self) -> JsResult<BindingReference> {
+        self.binding_stack
+            .pop()
+            .map(|binding| binding.reference)
+            .js_expect("assignment should have a pending binding")
+            .map_err(Into::into)
+    }
+
+    pub(super) fn discard_bindings_since(&mut self, pc: u32) {
+        while self
+            .binding_stack
+            .last()
+            .is_some_and(|binding| binding.pc >= pc)
+        {
+            self.binding_stack.pop();
         }
     }
 
