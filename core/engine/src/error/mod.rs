@@ -1319,10 +1319,9 @@ impl JsNativeError {
             realm,
             stack,
         } = self;
-        let constructors = realm.as_ref().map_or_else(
-            || context.intrinsics().constructors(),
-            |realm| realm.intrinsics().constructors(),
-        );
+        let realm = realm.unwrap_or_else(|| context.realm().clone());
+        let intrinsics = realm.intrinsics();
+        let constructors = intrinsics.constructors();
         let (prototype, tag) = match kind {
             JsNativeErrorKind::Aggregate(_) => (
                 constructors.aggregate_error().prototype(),
@@ -1343,7 +1342,7 @@ impl JsNativeError {
         };
 
         let o = JsObject::from_proto_and_data_with_shared_shape(
-            context.root_shape(),
+            intrinsics.root_shape(),
             prototype,
             Error::with_stack(tag, stack.0.clone()),
         )
@@ -1373,7 +1372,7 @@ impl JsNativeError {
                         .expect("engine errors cannot be the cause of another error")
                 })
                 .collect::<Vec<_>>();
-            let errors = Array::create_array_from_list(errors, context);
+            let errors = Array::create_array_from_intrinsics(errors, intrinsics);
             o.define_property_or_throw(
                 js_string!("errors"),
                 PropertyDescriptor::builder()

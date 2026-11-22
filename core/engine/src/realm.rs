@@ -6,7 +6,7 @@
 //!
 //! A realm is represented in this implementation as a Realm struct with the fields specified from the spec.
 
-use std::any::TypeId;
+use std::{any::TypeId, fmt};
 
 use crate::{
     Context, HostDefined, JsNativeError, JsObject, JsResult, JsString,
@@ -25,6 +25,40 @@ use boa_engine::property::{Attribute, PropertyDescriptor, PropertyKey};
 use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace, WeakGc};
 use rustc_hash::FxHashMap;
 
+// Intrinsics are allocated before the realm record exists. This cell connects
+// those objects to their realm once, and is traced so the cycle can be collected.
+#[derive(Clone, Trace, Finalize)]
+pub(crate) struct RealmOrigin(Gc<GcRefCell<Option<Realm>>>);
+
+impl fmt::Debug for RealmOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RealmOrigin").finish_non_exhaustive()
+    }
+}
+
+impl RealmOrigin {
+    fn new() -> Self {
+        Self(Gc::new(GcRefCell::default()))
+    }
+
+    fn bind(self, realm: Realm) -> JsResult<()> {
+        let mut slot = self.0.try_borrow_mut().map_err(|_| {
+            JsNativeError::typ().with_message("failed to bind the allocation realm")
+        })?;
+        if slot.is_some() {
+            return Err(JsNativeError::typ()
+                .with_message("allocation realm is already bound")
+                .into());
+        }
+        *slot = Some(realm);
+        Ok(())
+    }
+
+    pub(crate) fn realm(&self) -> Option<Realm> {
+        self.0.try_borrow().ok()?.clone()
+    }
+}
+
 /// Representation of a Realm.
 ///
 /// In the specification these are called Realm Records.
@@ -41,8 +75,8 @@ impl PartialEq for Realm {
     }
 }
 
-impl std::fmt::Debug for Realm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Realm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Realm")
             .field("intrinsics", &self.inner.intrinsics)
             .field("environment", &self.inner.environment)
@@ -80,8 +114,8 @@ pub struct WeakRealm {
     inner: WeakGc<Inner>,
 }
 
-impl std::fmt::Debug for WeakRealm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for WeakRealm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WeakRealm").finish_non_exhaustive()
     }
 }
@@ -106,7 +140,9 @@ impl Realm {
     /// Create a new [`Realm`].
     #[inline]
     pub fn create(hooks: &dyn HostHooks, root_shape: &RootShape) -> JsResult<Self> {
-        let intrinsics = Intrinsics::uninit(root_shape).ok_or_else(|| {
+        let origin = RealmOrigin::new();
+        let root_shape = root_shape.with_origin(origin.clone());
+        let intrinsics = Intrinsics::uninit(&root_shape).ok_or_else(|| {
             JsNativeError::typ().with_message("failed to create the realm intrinsics")
         })?;
 
@@ -131,6 +167,7 @@ impl Realm {
             }),
         };
 
+        origin.bind(realm.clone())?;
         realm.initialize();
 
         Ok(realm)

@@ -104,7 +104,7 @@ impl IntrinsicObject for Array {
         .name(js_string!("toString"))
         .build();
 
-        let unscopables_object = Self::unscopables_object();
+        let unscopables_object = Self::unscopables_object(realm);
 
         let builder = BuiltInBuilder::from_standard_constructor::<Self>(realm)
             // Static Methods
@@ -392,6 +392,13 @@ impl Array {
     where
         I: IntoIterator<Item = JsValue>,
     {
+        Self::create_array_from_intrinsics(elements, context.intrinsics())
+    }
+
+    pub(crate) fn create_array_from_intrinsics<I>(elements: I, intrinsics: &Intrinsics) -> JsObject
+    where
+        I: IntoIterator<Item = JsValue>,
+    {
         // 1. Assert: elements is a List whose elements are all ECMAScript language values.
         // 2. Let array be ! ArrayCreate(0).
         // 3. Let n be 0.
@@ -403,8 +410,7 @@ impl Array {
         let elements: ThinVec<_> = elements.into_iter().collect();
         let length = elements.len();
 
-        context
-            .intrinsics()
+        intrinsics
             .templates()
             .array()
             .create_with_indexed_properties(
@@ -3283,9 +3289,9 @@ impl Array {
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-array.prototype-@@unscopables
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/@@unscopables
-    pub(crate) fn unscopables_object() -> JsObject {
+    pub(crate) fn unscopables_object(realm: &Realm) -> JsObject {
         // 1. Let unscopableList be OrdinaryObjectCreate(null).
-        let unscopable_list = JsObject::with_null_proto();
+        let unscopable_list = JsObject::with_null_proto_in(realm.intrinsics().root_shape());
         let true_prop = PropertyDescriptor::builder()
             .value(true)
             .writable(true)

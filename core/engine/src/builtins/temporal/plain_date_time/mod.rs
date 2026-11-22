@@ -1334,7 +1334,7 @@ impl PlainDateTime {
             // a. Let paramString be roundTo.
             let param_string = param_string.clone();
             // b. Set roundTo to OrdinaryObjectCreate(null).
-            let new_round_to = JsObject::with_null_proto();
+            let new_round_to = JsObject::with_null_proto_in(context.root_shape());
             // c. Perform ! CreateDataPropertyOrThrow(roundTo, "smallestUnit", paramString).
             new_round_to.create_data_property_or_throw(
                 js_string!("smallestUnit"),
@@ -1647,7 +1647,11 @@ pub(crate) fn create_temporal_datetime(
     // 13. Set object.[[ISOMicrosecond]] to microsecond.
     // 14. Set object.[[ISONanosecond]] to nanosecond.
     // 15. Set object.[[Calendar]] to calendar.
-    let obj = JsObject::from_proto_and_data(prototype, PlainDateTime::new(inner));
+    let obj = JsObject::from_proto_and_data_in(
+        context.root_shape(),
+        prototype,
+        PlainDateTime::new(inner),
+    );
 
     // 16. Return object.
     Ok(obj)

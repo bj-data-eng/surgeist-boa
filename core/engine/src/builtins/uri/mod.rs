@@ -24,6 +24,7 @@ use crate::{
     Context, JsArgs, JsExpect, JsNativeError, JsResult, JsString, JsValue,
     context::intrinsics::Intrinsics,
     js_string,
+    object::shape::RootShape,
     object::{JsFunction, JsObject},
     realm::Realm,
     string::{CodePoint, StaticJsStrings},
@@ -47,18 +48,15 @@ pub struct UriFunctions {
     encode_uri_component: JsFunction,
 }
 
-impl Default for UriFunctions {
-    fn default() -> Self {
+impl UriFunctions {
+    pub(crate) fn uninit(root_shape: &RootShape) -> Self {
         Self {
-            decode_uri: JsFunction::empty_intrinsic_function(false),
-            decode_uri_component: JsFunction::empty_intrinsic_function(false),
-            encode_uri: JsFunction::empty_intrinsic_function(false),
-            encode_uri_component: JsFunction::empty_intrinsic_function(false),
+            decode_uri: JsFunction::empty_intrinsic_function(root_shape, false),
+            decode_uri_component: JsFunction::empty_intrinsic_function(root_shape, false),
+            encode_uri: JsFunction::empty_intrinsic_function(root_shape, false),
+            encode_uri_component: JsFunction::empty_intrinsic_function(root_shape, false),
         }
     }
-}
-
-impl UriFunctions {
     pub(crate) fn decode_uri(&self) -> JsFunction {
         self.decode_uri.clone()
     }

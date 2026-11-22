@@ -654,7 +654,7 @@ impl PlainTime {
             // a. Let paramString be roundTo.
             let param_string = param_string.clone();
             // b. Set roundTo to OrdinaryObjectCreate(null).
-            let new_round_to = JsObject::with_null_proto();
+            let new_round_to = JsObject::with_null_proto_in(context.root_shape());
             // c. Perform ! CreateDataPropertyOrThrow(roundTo, "smallestUnit", paramString).
             new_round_to.create_data_property_or_throw(
                 js_string!("smallestUnit"),
@@ -868,7 +868,8 @@ pub(crate) fn create_temporal_time(
     // 7. Set object.[[ISOMillisecond]] to millisecond.
     // 8. Set object.[[ISOMicrosecond]] to microsecond.
     // 9. Set object.[[ISONanosecond]] to nanosecond.
-    let obj = JsObject::from_proto_and_data(prototype, PlainTime { inner });
+    let obj =
+        JsObject::from_proto_and_data_in(context.root_shape(), prototype, PlainTime { inner });
 
     // 10. Return object.
     Ok(obj)

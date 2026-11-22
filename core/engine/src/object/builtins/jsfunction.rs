@@ -2,7 +2,9 @@
 use crate::js_string;
 use crate::{
     Context, JsNativeError, JsResult, JsValue, NativeFunction, TryIntoJsResult,
-    builtins::function::ConstructorKind, native_function::NativeFunctionObject, object::JsObject,
+    builtins::function::ConstructorKind,
+    native_function::NativeFunctionObject,
+    object::{JsObject, shape::RootShape},
     value::TryFromJs,
 };
 use boa_gc::{Finalize, Trace};
@@ -127,9 +129,10 @@ impl JsFunction {
     /// Mainly used to initialize objects before a [`Context`] is available to do so.
     ///
     /// [`Context`]: crate::Context
-    pub(crate) fn empty_intrinsic_function(constructor: bool) -> Self {
+    pub(crate) fn empty_intrinsic_function(root_shape: &RootShape, constructor: bool) -> Self {
         Self {
-            inner: JsObject::from_proto_and_data(
+            inner: JsObject::from_proto_and_data_in(
+                root_shape,
                 None,
                 NativeFunctionObject {
                     f: NativeFunction::from_fn_ptr(|_, _, _| Ok(JsValue::undefined())),

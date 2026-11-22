@@ -18,6 +18,7 @@ use crate::{
     error::JsNativeError,
     js_error, js_string,
     property::{PropertyDescriptor, PropertyKey},
+    realm::{Realm, RealmOrigin},
     value::PreferredType,
 };
 use boa_gc::{self, Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace, WeakGc};
@@ -77,9 +78,13 @@ impl<T: NativeObject> Clone for JsObject<T> {
 // so we have to force our users to debug the `JsObject` instead.
 #[allow(missing_debug_implementations)]
 #[derive(Trace, Finalize)]
+// Erased handles read this same prefix. ObjectData fixes payload alignment
+// and GcRefCell preserves the prefix before Object's data tail.
+#[repr(C)]
 pub(crate) struct VTableObject<T: NativeObject + ?Sized> {
     #[unsafe_ignore_trace]
     vtable: &'static InternalObjectMethods,
+    origin: Option<RealmOrigin>,
     object: GcRefCell<Object<T>>,
 }
 
@@ -154,10 +159,12 @@ impl JsObject {
     pub(crate) fn from_object_and_vtable<T: NativeObject>(
         object: Object<T>,
         vtable: &'static InternalObjectMethods,
+        origin: Option<RealmOrigin>,
     ) -> Self {
         let inner = Gc::new(VTableObject {
             object: GcRefCell::new(object),
             vtable,
+            origin,
         });
 
         JsObject { inner }.upcast()
@@ -183,7 +190,8 @@ impl JsObject {
     #[inline]
     #[must_use]
     pub fn with_object_proto(intrinsics: &Intrinsics) -> Self {
-        Self::from_proto_and_data(
+        Self::from_proto_and_data_in(
+            intrinsics.root_shape(),
             intrinsics.constructors().object().prototype(),
             OrdinaryObject,
         )
@@ -208,6 +216,10 @@ impl JsObject {
     #[must_use]
     pub fn with_null_proto() -> Self {
         Self::from_proto_and_data(None, OrdinaryObject)
+    }
+
+    pub(crate) fn with_null_proto_in(root_shape: &RootShape) -> Self {
+        Self::from_proto_and_data_in(root_shape, None, OrdinaryObject)
     }
 
     /// Creates a new object with the provided prototype and object data.
@@ -240,18 +252,15 @@ impl JsObject {
         prototype: O,
         data: T,
     ) -> Self {
-        let internal_methods = data.internal_methods();
-        let inner = Gc::new(VTableObject {
-            object: GcRefCell::new(Object {
-                data: ObjectData::new(data),
-                properties: PropertyMap::from_prototype_unique_shape(prototype.into()),
-                extensible: true,
-                private_elements: ThinVec::new(),
-            }),
-            vtable: internal_methods,
-        });
+        JsObject::new_unique(prototype, data).upcast()
+    }
 
-        JsObject { inner }.upcast()
+    pub(crate) fn from_proto_and_data_in<O: Into<Option<Self>>, T: NativeObject>(
+        root_shape: &RootShape,
+        prototype: O,
+        data: T,
+    ) -> Self {
+        JsObject::new_unique_in(root_shape, prototype, data).upcast()
     }
 
     /// Creates a new object with the provided prototype and object data.
@@ -266,21 +275,7 @@ impl JsObject {
         prototype: O,
         data: T,
     ) -> JsObject<T> {
-        let internal_methods = data.internal_methods();
-        let inner = Gc::new(VTableObject {
-            object: GcRefCell::new(Object {
-                data: ObjectData::new(data),
-                properties: PropertyMap::from_prototype_with_shared_shape(
-                    root_shape,
-                    prototype.into(),
-                ),
-                extensible: true,
-                private_elements: ThinVec::new(),
-            }),
-            vtable: internal_methods,
-        });
-
-        JsObject { inner }
+        JsObject::new(root_shape, prototype, data)
     }
 
     /// Downcasts the object's inner data if the object is of type `T`.
@@ -326,10 +321,9 @@ impl JsObject {
     /// For this cast to be sound, `self` must contain an instance of `T` inside its inner data.
     #[must_use]
     pub unsafe fn downcast_unchecked<T: NativeObject>(self) -> JsObject<T> {
-        // SAFETY: The caller guarantees `T` is the original inner data type of the underlying
-        // object.
-        // The pointer is guaranteed to be valid because we just created it.
-        // `VTableObject<ErasedObjectData>` and `VTableObject<T>` have the same size and alignment.
+        // SAFETY: The caller guarantees that T is the allocation's original
+        // payload type. The repr(C) wrapper and fixed payload alignment keep
+        // the erased handle at the same address as that allocation.
         let inner = unsafe { Gc::cast_unchecked::<VTableObject<T>>(self.inner) };
 
         JsObject { inner }
@@ -821,6 +815,15 @@ Cannot both specify accessors and a value or writable attribute",
 }
 
 impl<T: NativeObject> JsObject<T> {
+    /// Returns the realm in which this object was allocated, when known.
+    ///
+    /// Prototype changes and proxy targets do not affect this identity. Objects
+    /// created by context-free host constructors have no recorded realm.
+    #[must_use]
+    pub fn creation_realm(&self) -> Option<Realm> {
+        self.inner.origin.as_ref().and_then(RealmOrigin::realm)
+    }
+
     /// Immutably borrows the `Object`.
     ///
     /// The borrow lasts until the returned `Ref` exits scope.
@@ -1117,6 +1120,7 @@ impl<T: NativeObject> JsObject<T> {
                 private_elements: ThinVec::new(),
             }),
             vtable: internal_methods,
+            origin: root_shape.origin(),
         });
 
         Self { inner }
@@ -1140,6 +1144,22 @@ impl<T: NativeObject> JsObject<T> {
     /// assert!(obj.prototype().is_none());
     /// ```
     pub fn new_unique<O: Into<Option<JsObject>>>(prototype: O, data: T) -> Self {
+        Self::new_unique_with_origin(prototype, data, None)
+    }
+
+    pub(crate) fn new_unique_in<O: Into<Option<JsObject>>>(
+        root_shape: &RootShape,
+        prototype: O,
+        data: T,
+    ) -> Self {
+        Self::new_unique_with_origin(prototype, data, root_shape.origin())
+    }
+
+    fn new_unique_with_origin<O: Into<Option<JsObject>>>(
+        prototype: O,
+        data: T,
+        origin: Option<RealmOrigin>,
+    ) -> Self {
         let internal_methods = data.internal_methods();
         let inner = Gc::new(VTableObject {
             object: GcRefCell::new(Object {
@@ -1149,6 +1169,7 @@ impl<T: NativeObject> JsObject<T> {
                 private_elements: ThinVec::new(),
             }),
             vtable: internal_methods,
+            origin,
         });
 
         Self { inner }
@@ -1171,8 +1192,9 @@ impl<T: NativeObject> JsObject<T> {
     /// ```
     #[must_use]
     pub fn upcast(self) -> JsObject {
-        // SAFETY: The pointer is guaranteed to be valid.
-        // `VTableObject<ErasedObjectData>` and `VTableObject<T>` have the same size and alignment.
+        // SAFETY: The repr(C) wrappers have a common prefix and alignment
+        // through the Object fields before the typed payload. The collector
+        // keeps the allocation's original vtable to trace and drop that tail.
         let inner = unsafe { Gc::cast_unchecked::<ErasedVTableObject>(self.inner) };
 
         JsObject { inner }

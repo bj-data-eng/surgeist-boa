@@ -1302,7 +1302,8 @@ pub(crate) fn create_temporal_date(
     // 6. Set object.[[ISOMonth]] to isoMonth.
     // 7. Set object.[[ISODay]] to isoDay.
     // 8. Set object.[[Calendar]] to calendar.
-    let obj = JsObject::from_proto_and_data(prototype, PlainDate::new(inner));
+    let obj =
+        JsObject::from_proto_and_data_in(context.root_shape(), prototype, PlainDate::new(inner));
 
     // 9. Return object.
     Ok(obj)

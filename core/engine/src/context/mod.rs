@@ -540,11 +540,11 @@ impl Context {
         Ok(self.enter_realm(old_realm))
     }
 
-    /// Get the [`RootShape`].
+    /// Gets the allocation root for the currently active realm.
     #[inline]
     #[must_use]
-    pub const fn root_shape(&self) -> &RootShape {
-        &self.root_shape
+    pub fn root_shape(&self) -> &RootShape {
+        self.intrinsics().root_shape()
     }
 
     /// Gets the host hooks.

@@ -148,7 +148,8 @@ impl BuiltInConstructor for FinalizationRegistry {
 
         let (sender, receiver) = async_channel::bounded(1);
 
-        let registry = JsObject::new_unique(
+        let registry = JsObject::new_unique_in(
+            context.root_shape(),
             prototype,
             FinalizationRegistry {
                 realm,
