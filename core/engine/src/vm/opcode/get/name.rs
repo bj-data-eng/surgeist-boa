@@ -63,19 +63,13 @@ impl GetNameGlobal {
             let ic = &context.vm.frame().code_block().ic[usize::from(ic_index)];
 
             let object_borrowed = object.borrow();
-            if let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
-                let mut result = if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
-                    let prototype = shape.prototype().expect("prototype should have value");
-                    let prototype = prototype.borrow();
-                    prototype.properties().storage[slot.index as usize].clone()
-                } else {
-                    object_borrowed.properties().storage[slot.index as usize].clone()
-                };
+            if let Some((_, slot)) = ic.get(object_borrowed.shape()) {
+                let mut result = object_borrowed.properties().storage[slot.index as usize].clone();
 
                 drop(object_borrowed);
                 if slot.attributes.has_get() && result.is_object() {
                     result = result.as_object().expect("should contain getter").call(
-                        &object.clone().into(),
+                        &context.global_binding_receiver(),
                         &[],
                         context,
                     )?;
@@ -84,25 +78,27 @@ impl GetNameGlobal {
                 return Ok(());
             }
 
+            let initial_shape = object_borrowed.shape().clone();
             drop(object_borrowed);
 
             let key: PropertyKey = ic.name.clone().into();
 
             let context = &mut InternalMethodPropertyContext::new(context);
-            let Some(result) = object.__try_get__(&key, object.clone().into(), context)? else {
+            let Some(result) =
+                object.__try_get__(&key, context.global_binding_receiver(), context)?
+            else {
                 let name = binding_locator.name().to_std_string_escaped();
                 return Err(JsNativeError::reference()
                     .with_message(format!("{name} is not defined"))
                     .into());
             };
 
-            // Cache the property.
+            // The cache guards the global's shape. An inherited descriptor
+            // can change while that shape remains the same.
             let slot = *context.slot();
-            if slot.is_cacheable() {
+            if slot.is_cacheable() && !slot.attributes.contains(SlotAttributes::PROTOTYPE) {
                 let ic = &context.vm.frame().code_block.ic[usize::from(ic_index)];
-                let object_borrowed = object.borrow();
-                let shape = object_borrowed.shape();
-                ic.set(shape, slot);
+                ic.set_after_access(&initial_shape, object.borrow().shape(), slot);
             }
 
             context.vm.set_register(dst.into(), result);

@@ -133,15 +133,31 @@ impl JsObject {
         K: Into<PropertyKey>,
         V: Into<JsValue>,
     {
-        let key = key.into();
+        self.set_with_receiver(
+            &key.into(),
+            value.into(),
+            self.clone().into(),
+            throw,
+            context,
+        )
+    }
+
+    pub(crate) fn set_with_receiver(
+        &self,
+        key: &PropertyKey,
+        value: JsValue,
+        receiver: JsValue,
+        throw: bool,
+        context: &mut Context,
+    ) -> JsResult<bool> {
         // 1. Assert: Type(O) is Object.
         // 2. Assert: IsPropertyKey(P) is true.
         // 3. Assert: Type(Throw) is Boolean.
         // 4. Let success be ? O.[[Set]](P, V, O).
         let success = self.__set__(
             key.clone(),
-            value.into(),
-            self.clone().into(),
+            value,
+            receiver,
             &mut InternalMethodPropertyContext::new(context),
         )?;
         // 5. If success is false and Throw is true, throw a TypeError exception.

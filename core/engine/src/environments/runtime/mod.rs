@@ -690,8 +690,11 @@ impl Context {
         match locator.scope() {
             BindingLocatorScope::GlobalObject => {
                 let key = locator.name().clone();
-                let obj = self.global_object();
-                obj.try_get(key, self)
+                self.global_object().__try_get__(
+                    &key.into(),
+                    self.global_binding_receiver(),
+                    &mut self.into(),
+                )
             }
             BindingLocatorScope::GlobalDeclarative => {
                 let env = self.vm.frame().realm.environment();
@@ -723,8 +726,7 @@ impl Context {
         match locator.scope() {
             BindingLocatorScope::GlobalObject => {
                 let key = locator.name().clone();
-                let obj = self.global_object();
-                obj.set(key, value, strict, self)?;
+                self.set_global_binding_value(key, value, strict)?;
             }
             BindingLocatorScope::GlobalDeclarative => {
                 let env = self.vm.frame().realm.environment();
