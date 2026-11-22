@@ -33,6 +33,7 @@ pub(crate) mod internal_methods;
 
 pub mod builtins;
 mod datatypes;
+pub mod host;
 mod jsobject;
 mod operations;
 mod property_map;
