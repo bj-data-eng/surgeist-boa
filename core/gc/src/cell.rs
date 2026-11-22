@@ -92,6 +92,9 @@ impl Debug for BorrowFlag {
 /// that can be used inside of a garbage-collected pointer.
 ///
 /// This object is a `RefCell` that can be used inside of a `Gc<T>`.
+// The repr(C) prefix keeps the borrow state and value offset stable across
+// equally aligned payloads when an embedding type erases its own data tail.
+#[repr(C)]
 pub struct GcRefCell<T: ?Sized + 'static> {
     borrow: Cell<BorrowFlag>,
     cell: UnsafeCell<T>,

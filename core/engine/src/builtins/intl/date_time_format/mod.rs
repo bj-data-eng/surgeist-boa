@@ -192,7 +192,8 @@ impl BuiltInConstructor for DateTimeFormat {
             FormatDefaults::Date,
             context,
         )?;
-        let date_time_format = JsObject::from_proto_and_data(prototype, dtf);
+        let date_time_format =
+            JsObject::from_proto_and_data_in(context.root_shape(), prototype, dtf);
 
         // 3. If the implementation supports the normative optional constructor mode of 4.3 Note 1, then
         //     a. Let this be the this value.

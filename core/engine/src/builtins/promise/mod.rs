@@ -2761,7 +2761,7 @@ fn create_keyed_result_object(
     debug_assert_eq!(keys.len(), values.len());
 
     // 2. Let obj be OrdinaryObjectCreate(null).
-    let obj = JsObject::with_null_proto();
+    let obj = JsObject::with_null_proto_in(context.root_shape());
 
     // 3. For each integer i such that 0 ≤ i < the number of elements in keys, in ascending order, do
     for (key, value) in keys.iter().zip(values.iter()) {

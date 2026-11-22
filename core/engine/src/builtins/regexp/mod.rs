@@ -1270,8 +1270,8 @@ impl RegExp {
         #[allow(clippy::if_not_else)]
         let (groups, group_names) = if !named_groups.clone().is_empty() {
             // a. Let groups be OrdinaryObjectCreate(null).
-            let groups = JsObject::with_null_proto();
-            let group_names = JsObject::with_null_proto();
+            let groups = JsObject::with_null_proto_in(context.root_shape());
+            let group_names = JsObject::with_null_proto_in(context.root_shape());
 
             // e. If the ith capture of R was defined with a GroupName, then
             // i. Let s be the CapturingGroupName of that GroupName.

@@ -1482,7 +1482,7 @@ impl ZonedDateTime {
             // a. Let paramString be roundTo.
             let param_string = param_string.clone();
             // b. Set roundTo to OrdinaryObjectCreate(null).
-            let new_round_to = JsObject::with_null_proto();
+            let new_round_to = JsObject::with_null_proto_in(context.root_shape());
             // c. Perform ! CreateDataPropertyOrThrow(roundTo, "smallestUnit", paramString).
             new_round_to.create_data_property_or_throw(
                 js_string!("smallestUnit"),
@@ -1741,7 +1741,7 @@ impl ZonedDateTime {
         let options_obj = if let Some(param_str) = direction_param.as_string() {
             // a. Let paramString be directionParam.
             // b. Set directionParam to OrdinaryObjectCreate(null).
-            let obj = JsObject::with_null_proto();
+            let obj = JsObject::with_null_proto_in(context.root_shape());
             // c. Perform ! CreateDataPropertyOrThrow(directionParam, "direction", paramString).
             obj.create_data_property_or_throw(
                 js_string!("direction"),
@@ -1902,7 +1902,11 @@ pub(crate) fn create_temporal_zoneddatetime(
     // 4. Set object.[[EpochNanoseconds]] to epochNanoseconds.
     // 5. Set object.[[TimeZone]] to timeZone.
     // 6. Set object.[[Calendar]] to calendar.
-    let obj = JsObject::from_proto_and_data(prototype, ZonedDateTime::new(inner));
+    let obj = JsObject::from_proto_and_data_in(
+        context.root_shape(),
+        prototype,
+        ZonedDateTime::new(inner),
+    );
 
     // 7. Return object.
     Ok(obj)

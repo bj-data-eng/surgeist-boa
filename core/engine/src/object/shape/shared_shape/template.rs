@@ -5,9 +5,10 @@ use crate::{
     JsValue,
     object::{
         IndexedProperties, JsObject, NativeObject, Object, ObjectData, PropertyMap,
-        shape::slot::SlotAttributes,
+        shape::{RootShape, slot::SlotAttributes},
     },
     property::{Attribute, PropertyKey},
+    realm::RealmOrigin,
 };
 
 use super::{SharedShape, TransitionKey};
@@ -17,20 +18,23 @@ use super::{SharedShape, TransitionKey};
 #[derive(Debug, Clone, Trace, Finalize)]
 pub(crate) struct ObjectTemplate {
     shape: SharedShape,
+    origin: Option<RealmOrigin>,
 }
 
 impl ObjectTemplate {
     /// Create a new [`ObjectTemplate`]
-    pub(crate) fn new(shape: &SharedShape) -> Self {
+    pub(crate) fn new(root_shape: &RootShape) -> Self {
         Self {
-            shape: shape.clone(),
+            shape: root_shape.shape().clone(),
+            origin: root_shape.origin(),
         }
     }
 
     /// Create and [`ObjectTemplate`] with a prototype.
-    pub(crate) fn with_prototype(shape: &SharedShape, prototype: JsObject) -> Self {
-        let shape = shape.change_prototype_transition(Some(prototype));
-        Self { shape }
+    pub(crate) fn with_prototype(root_shape: &RootShape, prototype: JsObject) -> Self {
+        let mut template = Self::new(root_shape);
+        template.set_prototype(prototype);
+        template
     }
 
     /// Check if the shape has a specific, prototype.
@@ -119,7 +123,7 @@ impl ObjectTemplate {
 
         object.properties.storage = storage;
 
-        JsObject::from_object_and_vtable(object, internal_methods)
+        JsObject::from_object_and_vtable(object, internal_methods, self.origin.clone())
     }
 
     /// Create an object from the [`ObjectTemplate`]
@@ -142,6 +146,6 @@ impl ObjectTemplate {
 
         object.properties.storage = storage;
 
-        JsObject::from_object_and_vtable(object, internal_methods)
+        JsObject::from_object_and_vtable(object, internal_methods, self.origin.clone())
     }
 }

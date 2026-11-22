@@ -36,6 +36,14 @@ impl JsWeakMap {
         }
     }
 
+    /// Creates a host-private weak map without a prototype or creation realm.
+    #[must_use]
+    pub fn with_null_proto() -> Self {
+        Self {
+            inner: JsObject::from_proto_and_data(None, NativeWeakMap::new()),
+        }
+    }
+
     /// Returns the value associated with the specified key in the `WeakMap`,
     /// or `undefined` if the key is not present.
     ///

@@ -23,6 +23,7 @@ use crate::builtins::intl::Intl;
 /// for multiple references to the same set of intrinsic objects.
 #[derive(Debug, Trace, Finalize)]
 pub struct Intrinsics {
+    root_shape: RootShape,
     /// Cached standard constructors
     pub(super) constructors: StandardConstructors,
     /// Cached intrinsic objects
@@ -40,14 +41,21 @@ impl Intrinsics {
     ///
     /// [`Realm::initialize`]: crate::realm::Realm::initialize
     pub(crate) fn uninit(root_shape: &RootShape) -> Option<Self> {
-        let constructors = StandardConstructors::default();
+        let constructors = StandardConstructors::uninit(root_shape);
         let templates = ObjectTemplates::new(root_shape, &constructors);
 
         Some(Self {
+            root_shape: root_shape.clone(),
             constructors,
-            objects: IntrinsicObjects::uninit()?,
+            objects: IntrinsicObjects::uninit(root_shape)?,
             templates,
         })
+    }
+
+    /// Returns the allocation root for this set of intrinsics' realm.
+    #[must_use]
+    pub const fn root_shape(&self) -> &RootShape {
+        &self.root_shape
     }
 
     /// Return the cached intrinsic objects.
@@ -76,16 +84,14 @@ pub struct StandardConstructor {
     prototype: JsObject,
 }
 
-impl Default for StandardConstructor {
-    fn default() -> Self {
+impl StandardConstructor {
+    fn uninit(root_shape: &RootShape) -> Self {
         Self {
-            constructor: JsFunction::empty_intrinsic_function(true),
-            prototype: JsObject::with_null_proto(),
+            constructor: JsFunction::empty_intrinsic_function(root_shape, true),
+            prototype: JsObject::with_null_proto_in(root_shape),
         }
     }
-}
 
-impl StandardConstructor {
     /// Creates a new `StandardConstructor` from the constructor and the prototype.
     pub(crate) fn new(constructor: JsFunction, prototype: JsObject) -> Self {
         Self {
@@ -95,9 +101,9 @@ impl StandardConstructor {
     }
 
     /// Build a constructor with a defined prototype.
-    fn with_prototype(prototype: JsObject) -> Self {
+    fn with_prototype(root_shape: &RootShape, prototype: JsObject) -> Self {
         Self {
-            constructor: JsFunction::empty_intrinsic_function(true),
+            constructor: JsFunction::empty_intrinsic_function(root_shape, true),
             prototype,
         }
     }
@@ -206,105 +212,114 @@ pub struct StandardConstructors {
     calendar: StandardConstructor,
 }
 
-impl Default for StandardConstructors {
-    fn default() -> Self {
+impl StandardConstructors {
+    fn uninit(root_shape: &RootShape) -> Self {
         Self {
-            object: StandardConstructor::with_prototype(JsObject::from_object_and_vtable(
-                Object::<OrdinaryObject>::default(),
-                &IMMUTABLE_PROTOTYPE_EXOTIC_INTERNAL_METHODS,
-            )),
-            async_generator_function: StandardConstructor::default(),
-            proxy: StandardConstructor::default(),
-            date: StandardConstructor::default(),
+            object: StandardConstructor::with_prototype(
+                root_shape,
+                JsObject::from_object_and_vtable(
+                    Object::<OrdinaryObject>::default(),
+                    &IMMUTABLE_PROTOTYPE_EXOTIC_INTERNAL_METHODS,
+                    root_shape.origin(),
+                ),
+            ),
+            async_generator_function: StandardConstructor::uninit(root_shape),
+            proxy: StandardConstructor::uninit(root_shape),
+            date: StandardConstructor::uninit(root_shape),
             function: StandardConstructor {
-                constructor: JsFunction::empty_intrinsic_function(true),
-                prototype: JsFunction::empty_intrinsic_function(false).into(),
+                constructor: JsFunction::empty_intrinsic_function(root_shape, true),
+                prototype: JsFunction::empty_intrinsic_function(root_shape, false).into(),
             },
-            async_function: StandardConstructor::default(),
-            generator_function: StandardConstructor::default(),
-            array: StandardConstructor::with_prototype(JsObject::from_proto_and_data(None, Array)),
-            bigint: StandardConstructor::default(),
-            number: StandardConstructor::with_prototype(JsObject::from_proto_and_data(None, 0.0)),
-            boolean: StandardConstructor::with_prototype(JsObject::from_proto_and_data(
-                None, false,
-            )),
-            string: StandardConstructor::with_prototype(JsObject::from_proto_and_data(
-                None,
-                js_string!(),
-            )),
-            regexp: StandardConstructor::default(),
-            symbol: StandardConstructor::default(),
-            error: StandardConstructor::default(),
-            type_error: StandardConstructor::default(),
-            reference_error: StandardConstructor::default(),
-            range_error: StandardConstructor::default(),
-            syntax_error: StandardConstructor::default(),
-            eval_error: StandardConstructor::default(),
-            uri_error: StandardConstructor::default(),
-            aggregate_error: StandardConstructor::default(),
-            map: StandardConstructor::default(),
-            set: StandardConstructor::default(),
-            typed_array: StandardConstructor::default(),
-            typed_int8_array: StandardConstructor::default(),
-            typed_uint8_array: StandardConstructor::default(),
-            typed_uint8clamped_array: StandardConstructor::default(),
-            typed_int16_array: StandardConstructor::default(),
-            typed_uint16_array: StandardConstructor::default(),
-            typed_int32_array: StandardConstructor::default(),
-            typed_uint32_array: StandardConstructor::default(),
-            typed_bigint64_array: StandardConstructor::default(),
-            typed_biguint64_array: StandardConstructor::default(),
+            async_function: StandardConstructor::uninit(root_shape),
+            generator_function: StandardConstructor::uninit(root_shape),
+            array: StandardConstructor::with_prototype(
+                root_shape,
+                JsObject::from_proto_and_data_in(root_shape, None, Array),
+            ),
+            bigint: StandardConstructor::uninit(root_shape),
+            number: StandardConstructor::with_prototype(
+                root_shape,
+                JsObject::from_proto_and_data_in(root_shape, None, 0.0),
+            ),
+            boolean: StandardConstructor::with_prototype(
+                root_shape,
+                JsObject::from_proto_and_data_in(root_shape, None, false),
+            ),
+            string: StandardConstructor::with_prototype(
+                root_shape,
+                JsObject::from_proto_and_data_in(root_shape, None, js_string!()),
+            ),
+            regexp: StandardConstructor::uninit(root_shape),
+            symbol: StandardConstructor::uninit(root_shape),
+            error: StandardConstructor::uninit(root_shape),
+            type_error: StandardConstructor::uninit(root_shape),
+            reference_error: StandardConstructor::uninit(root_shape),
+            range_error: StandardConstructor::uninit(root_shape),
+            syntax_error: StandardConstructor::uninit(root_shape),
+            eval_error: StandardConstructor::uninit(root_shape),
+            uri_error: StandardConstructor::uninit(root_shape),
+            aggregate_error: StandardConstructor::uninit(root_shape),
+            map: StandardConstructor::uninit(root_shape),
+            set: StandardConstructor::uninit(root_shape),
+            typed_array: StandardConstructor::uninit(root_shape),
+            typed_int8_array: StandardConstructor::uninit(root_shape),
+            typed_uint8_array: StandardConstructor::uninit(root_shape),
+            typed_uint8clamped_array: StandardConstructor::uninit(root_shape),
+            typed_int16_array: StandardConstructor::uninit(root_shape),
+            typed_uint16_array: StandardConstructor::uninit(root_shape),
+            typed_int32_array: StandardConstructor::uninit(root_shape),
+            typed_uint32_array: StandardConstructor::uninit(root_shape),
+            typed_bigint64_array: StandardConstructor::uninit(root_shape),
+            typed_biguint64_array: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "float16")]
-            typed_float16_array: StandardConstructor::default(),
-            typed_float32_array: StandardConstructor::default(),
-            typed_float64_array: StandardConstructor::default(),
-            array_buffer: StandardConstructor::default(),
-            shared_array_buffer: StandardConstructor::default(),
-            data_view: StandardConstructor::default(),
-            date_time_format: StandardConstructor::default(),
-            promise: StandardConstructor::default(),
-            weak_ref: StandardConstructor::default(),
-            weak_map: StandardConstructor::default(),
-            weak_set: StandardConstructor::default(),
-            iterator: StandardConstructor::default(),
-            finalization_registry: StandardConstructor::default(),
+            typed_float16_array: StandardConstructor::uninit(root_shape),
+            typed_float32_array: StandardConstructor::uninit(root_shape),
+            typed_float64_array: StandardConstructor::uninit(root_shape),
+            array_buffer: StandardConstructor::uninit(root_shape),
+            shared_array_buffer: StandardConstructor::uninit(root_shape),
+            data_view: StandardConstructor::uninit(root_shape),
+            date_time_format: StandardConstructor::uninit(root_shape),
+            promise: StandardConstructor::uninit(root_shape),
+            weak_ref: StandardConstructor::uninit(root_shape),
+            weak_map: StandardConstructor::uninit(root_shape),
+            weak_set: StandardConstructor::uninit(root_shape),
+            iterator: StandardConstructor::uninit(root_shape),
+            finalization_registry: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "intl")]
-            collator: StandardConstructor::default(),
+            collator: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "intl")]
-            list_format: StandardConstructor::default(),
+            list_format: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "intl")]
-            locale: StandardConstructor::default(),
+            locale: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "intl")]
-            segmenter: StandardConstructor::default(),
+            segmenter: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "intl")]
-            plural_rules: StandardConstructor::default(),
+            plural_rules: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "intl")]
-            number_format: StandardConstructor::default(),
+            number_format: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            instant: StandardConstructor::default(),
+            instant: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            plain_date_time: StandardConstructor::default(),
+            plain_date_time: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            plain_date: StandardConstructor::default(),
+            plain_date: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            plain_time: StandardConstructor::default(),
+            plain_time: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            plain_year_month: StandardConstructor::default(),
+            plain_year_month: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            plain_month_day: StandardConstructor::default(),
+            plain_month_day: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            time_zone: StandardConstructor::default(),
+            time_zone: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            duration: StandardConstructor::default(),
+            duration: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            zoned_date_time: StandardConstructor::default(),
+            zoned_date_time: StandardConstructor::uninit(root_shape),
             #[cfg(feature = "temporal")]
-            calendar: StandardConstructor::default(),
+            calendar: StandardConstructor::uninit(root_shape),
         }
     }
-}
 
-impl StandardConstructors {
     /// Returns the `AsyncGeneratorFunction` constructor.
     ///
     /// More information:
@@ -1164,36 +1179,36 @@ impl IntrinsicObjects {
     ///
     /// [`Realm::initialize`]: crate::realm::Realm::initialize
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) fn uninit() -> Option<Self> {
+    pub(crate) fn uninit(root_shape: &RootShape) -> Option<Self> {
         Some(Self {
-            reflect: JsObject::with_null_proto(),
-            math: JsObject::with_null_proto(),
-            json: JsObject::with_null_proto(),
-            throw_type_error: JsFunction::empty_intrinsic_function(false),
-            array_prototype_values: JsFunction::empty_intrinsic_function(false),
-            array_prototype_to_string: JsFunction::empty_intrinsic_function(false),
-            iterator_prototypes: IteratorPrototypes::default(),
-            generator: JsObject::with_null_proto(),
-            async_generator: JsObject::with_null_proto(),
-            atomics: JsObject::with_null_proto(),
-            eval: JsFunction::empty_intrinsic_function(false),
-            uri_functions: UriFunctions::default(),
-            is_finite: JsFunction::empty_intrinsic_function(false),
-            is_nan: JsFunction::empty_intrinsic_function(false),
-            parse_float: JsFunction::empty_intrinsic_function(false),
-            parse_int: JsFunction::empty_intrinsic_function(false),
+            reflect: JsObject::with_null_proto_in(root_shape),
+            math: JsObject::with_null_proto_in(root_shape),
+            json: JsObject::with_null_proto_in(root_shape),
+            throw_type_error: JsFunction::empty_intrinsic_function(root_shape, false),
+            array_prototype_values: JsFunction::empty_intrinsic_function(root_shape, false),
+            array_prototype_to_string: JsFunction::empty_intrinsic_function(root_shape, false),
+            iterator_prototypes: IteratorPrototypes::uninit(root_shape),
+            generator: JsObject::with_null_proto_in(root_shape),
+            async_generator: JsObject::with_null_proto_in(root_shape),
+            atomics: JsObject::with_null_proto_in(root_shape),
+            eval: JsFunction::empty_intrinsic_function(root_shape, false),
+            uri_functions: UriFunctions::uninit(root_shape),
+            is_finite: JsFunction::empty_intrinsic_function(root_shape, false),
+            is_nan: JsFunction::empty_intrinsic_function(root_shape, false),
+            parse_float: JsFunction::empty_intrinsic_function(root_shape, false),
+            parse_int: JsFunction::empty_intrinsic_function(root_shape, false),
             #[cfg(feature = "annex-b")]
-            escape: JsFunction::empty_intrinsic_function(false),
+            escape: JsFunction::empty_intrinsic_function(root_shape, false),
             #[cfg(feature = "annex-b")]
-            unescape: JsFunction::empty_intrinsic_function(false),
+            unescape: JsFunction::empty_intrinsic_function(root_shape, false),
             #[cfg(feature = "intl")]
-            intl: JsObject::new_unique(None, Intl::new()?),
+            intl: JsObject::new_unique_in(root_shape, None, Intl::new()?),
             #[cfg(feature = "intl")]
-            segments_prototype: JsObject::with_null_proto(),
+            segments_prototype: JsObject::with_null_proto_in(root_shape),
             #[cfg(feature = "temporal")]
-            temporal: JsObject::with_null_proto(),
+            temporal: JsObject::with_null_proto_in(root_shape),
             #[cfg(feature = "temporal")]
-            now: JsObject::with_null_proto(),
+            now: JsObject::with_null_proto_in(root_shape),
         })
     }
 
@@ -1435,8 +1450,6 @@ pub(crate) struct ObjectTemplates {
 
 impl ObjectTemplates {
     pub(crate) fn new(root_shape: &RootShape, constructors: &StandardConstructors) -> Self {
-        let root_shape = root_shape.shape();
-
         // pre-initialize used shapes.
         let ordinary_object =
             ObjectTemplate::with_prototype(root_shape, constructors.object().prototype());

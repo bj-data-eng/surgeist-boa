@@ -908,7 +908,7 @@ impl Duration {
             // a. Let paramString be roundTo.
             let param_string = param_string.clone();
             // b. Set roundTo to OrdinaryObjectCreate(null).
-            let new_round_to = JsObject::with_null_proto();
+            let new_round_to = JsObject::with_null_proto_in(context.root_shape());
             // c. Perform ! CreateDataPropertyOrThrow(roundTo, "smallestUnit", paramString).
             new_round_to.create_data_property_or_throw(
                 js_string!("smallestUnit"),
@@ -1009,7 +1009,7 @@ impl Duration {
             JsVariant::String(param_string) => {
                 // a. Let paramString be totalOf.
                 // b. Set totalOf to OrdinaryObjectCreate(null).
-                let total_of = JsObject::with_null_proto();
+                let total_of = JsObject::with_null_proto_in(context.root_shape());
                 // c. Perform ! CreateDataPropertyOrThrow(totalOf, "unit", paramString).
                 total_of.create_data_property_or_throw(
                     js_string!("unit"),
@@ -1262,7 +1262,8 @@ pub(crate) fn create_temporal_duration(
     // 12. Set object.[[Microseconds]] to ℝ(𝔽(microseconds)).
     // 13. Set object.[[Nanoseconds]] to ℝ(𝔽(nanoseconds)).
 
-    let obj = JsObject::from_proto_and_data(prototype, Duration::new(inner));
+    let obj =
+        JsObject::from_proto_and_data_in(context.root_shape(), prototype, Duration::new(inner));
     // 14. Return object.
     Ok(obj)
 }

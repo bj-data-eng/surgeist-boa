@@ -20,7 +20,7 @@ use super::{
         ordinary_define_own_property, ordinary_delete, ordinary_get_own_property,
         ordinary_has_property, ordinary_own_property_keys, validate_and_apply_property_descriptor,
     },
-    shape::slot::SlotAttributes,
+    shape::{RootShape, slot::SlotAttributes},
 };
 
 /// Creates an extensible host object with an immutable guest-visible prototype.
@@ -28,8 +28,8 @@ use super::{
 /// A host can construct a global with this object through
 /// [`HostHooks::create_global_object`](crate::context::HostHooks::create_global_object).
 #[must_use]
-pub fn immutable_prototype(prototype: JsPrototype) -> JsObject {
-    JsObject::from_proto_and_data(prototype, ImmutablePrototype)
+pub fn immutable_prototype(root_shape: &RootShape, prototype: JsPrototype) -> JsObject {
+    JsObject::from_proto_and_data_in(root_shape, prototype, ImmutablePrototype)
 }
 
 /// Creates an empty Window named-properties layer.
@@ -37,8 +37,8 @@ pub fn immutable_prototype(prototype: JsPrototype) -> JsObject {
 /// It refuses guest definitions, deletions and attempts to prevent extensions.
 /// Ordinary assignment can still invoke inherited setters on the actual receiver.
 #[must_use]
-pub fn window_properties(prototype: JsObject) -> JsObject {
-    let object = JsObject::from_proto_and_data(Some(prototype), WindowProperties);
+pub fn window_properties(root_shape: &RootShape, prototype: JsObject) -> JsObject {
+    let object = JsObject::from_proto_and_data_in(root_shape, Some(prototype), WindowProperties);
     object.insert_property(
         JsSymbol::to_string_tag(),
         PropertyDescriptor::builder()
@@ -152,8 +152,12 @@ pub trait IndexedProperties: Trace + 'static {
 /// create its own index, delete a supported index, or prevent extensions.
 /// Ordinary properties hide legacy names.
 #[must_use]
-pub fn readonly_indexed<T: IndexedProperties>(prototype: JsPrototype, source: T) -> JsObject {
-    JsObject::from_proto_and_data(prototype, ReadOnlyIndices(Gc::new(source)))
+pub fn readonly_indexed<T: IndexedProperties>(
+    root_shape: &RootShape,
+    prototype: JsPrototype,
+    source: T,
+) -> JsObject {
+    JsObject::from_proto_and_data_in(root_shape, prototype, ReadOnlyIndices(Gc::new(source)))
 }
 
 /// Returns the source if the object itself carries the specified native data.

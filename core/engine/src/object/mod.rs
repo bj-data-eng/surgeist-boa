@@ -891,7 +891,11 @@ impl<'ctx> ConstructorBuilder<'ctx> {
                 );
             }
 
-            JsObject::from_object_and_vtable(self.prototype, &ORDINARY_INTERNAL_METHODS)
+            JsObject::from_object_and_vtable(
+                self.prototype,
+                &ORDINARY_INTERNAL_METHODS,
+                self.context.root_shape().origin(),
+            )
         };
 
         let constructor = {
@@ -935,7 +939,11 @@ impl<'ctx> ConstructorBuilder<'ctx> {
                 );
             }
 
-            JsObject::from_object_and_vtable(constructor, internal_methods)
+            JsObject::from_object_and_vtable(
+                constructor,
+                internal_methods,
+                self.context.root_shape().origin(),
+            )
         };
 
         {

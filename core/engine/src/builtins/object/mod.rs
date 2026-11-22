@@ -1413,7 +1413,7 @@ impl OrdinaryObject {
         }
 
         // 2. Let obj be OrdinaryObjectCreate(null).
-        let obj = JsObject::with_null_proto();
+        let obj = JsObject::with_null_proto_in(context.root_shape());
 
         // 3. For each Record { [[Key]], [[Elements]] } g of groups, do
         for (key, elements) in groups {

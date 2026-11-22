@@ -506,7 +506,7 @@ impl Instant {
             // a. Let paramString be roundTo.
             let param_string = param_string.clone();
             // b. Set roundTo to OrdinaryObjectCreate(null).
-            let new_round_to = JsObject::with_null_proto();
+            let new_round_to = JsObject::with_null_proto_in(context.root_shape());
             // c. Perform ! CreateDataPropertyOrThrow(roundTo, "smallestUnit", paramString).
             new_round_to.create_data_property_or_throw(
                 js_string!("smallestUnit"),
@@ -784,7 +784,7 @@ pub(crate) fn create_temporal_instant(
         get_prototype_from_constructor(&new_target, StandardConstructors::instant, context)?;
 
     // 4. Set object.[[Nanoseconds]] to epochNanoseconds.
-    let obj = JsObject::from_proto_and_data(proto, Instant::new(instant));
+    let obj = JsObject::from_proto_and_data_in(context.root_shape(), proto, Instant::new(instant));
 
     // 5. Return object.
     Ok(obj.into())

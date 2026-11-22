@@ -568,7 +568,7 @@ impl Json {
 
         // 3. Let internalSlotsList be « [[IsRawJSON]] ».
         // 4. Let obj be OrdinaryObjectCreate(null, internalSlotsList).
-        let obj = JsObject::from_proto_and_data(None::<JsObject>, RawJson);
+        let obj = JsObject::from_proto_and_data_in(context.root_shape(), None, RawJson);
 
         // 5. Perform ! CreateDataPropertyOrThrow(obj, "rawJSON", jsonString).
         obj.create_data_property_or_throw(js_string!("rawJSON"), json_string, context)

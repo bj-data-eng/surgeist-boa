@@ -8,6 +8,7 @@ use crate::{
     js_string,
     native_function::{CoroutineBranch, CoroutineState},
     object::JsObject,
+    object::shape::RootShape,
     realm::Realm,
     symbol::JsSymbol,
     vm::CompletionRecord,
@@ -89,21 +90,21 @@ pub struct IteratorPrototypes {
     wrap_for_valid_iterator: JsObject,
 }
 
-impl Default for IteratorPrototypes {
-    fn default() -> Self {
+impl IteratorPrototypes {
+    pub(crate) fn uninit(root_shape: &RootShape) -> Self {
         Self {
-            iterator: JsObject::with_null_proto(),
-            async_iterator: JsObject::with_null_proto(),
-            async_from_sync_iterator: JsObject::with_null_proto(),
-            array: JsObject::with_null_proto(),
-            set: JsObject::with_null_proto(),
-            string: JsObject::with_null_proto(),
-            regexp_string: JsObject::with_null_proto(),
-            map: JsObject::with_null_proto(),
+            iterator: JsObject::with_null_proto_in(root_shape),
+            async_iterator: JsObject::with_null_proto_in(root_shape),
+            async_from_sync_iterator: JsObject::with_null_proto_in(root_shape),
+            array: JsObject::with_null_proto_in(root_shape),
+            set: JsObject::with_null_proto_in(root_shape),
+            string: JsObject::with_null_proto_in(root_shape),
+            regexp_string: JsObject::with_null_proto_in(root_shape),
+            map: JsObject::with_null_proto_in(root_shape),
             #[cfg(feature = "intl")]
-            segment: JsObject::with_null_proto(),
-            iterator_helper: JsObject::with_null_proto(),
-            wrap_for_valid_iterator: JsObject::with_null_proto(),
+            segment: JsObject::with_null_proto_in(root_shape),
+            iterator_helper: JsObject::with_null_proto_in(root_shape),
+            wrap_for_valid_iterator: JsObject::with_null_proto_in(root_shape),
         }
     }
 }
