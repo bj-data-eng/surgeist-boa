@@ -69,6 +69,37 @@ fn global_accessors_only_observe_the_window_proxy() {
 }
 
 #[test]
+fn a_global_accessor_can_remove_its_own_lookup_slot() {
+    for mut context in [
+        Context::default(),
+        Context::builder()
+            .host_hooks(Rc::new(WindowHost::default()))
+            .build()
+            .unwrap(),
+    ] {
+        let result = context
+            .eval(Source::from_bytes(
+                r#"
+                Object.defineProperty(globalThis, "ephemeralName", {
+                    get() {
+                        if (this !== globalThis) throw Error("unexpected receiver");
+                        Reflect.deleteProperty(this, "ephemeralName");
+                        return 42;
+                    },
+                    configurable: true
+                });
+                function readBinding() { return ephemeralName; }
+                if (readBinding() !== 42) throw Error("unexpected first result");
+                try { readBinding(); false; }
+                catch (error) { error instanceof ReferenceError; }
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(result.as_boolean(), Some(true));
+    }
+}
+
+#[test]
 fn window_names_follow_the_current_ordinary_prototype_descriptors() {
     let mut context = Context::builder()
         .host_hooks(Rc::new(WindowHost::default()))
