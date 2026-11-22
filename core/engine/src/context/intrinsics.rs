@@ -1109,6 +1109,10 @@ pub struct IntrinsicObjects {
     /// [`%ThrowTypeError%`](https://tc39.es/ecma262/#sec-%throwtypeerror%)
     throw_type_error: JsFunction,
 
+    array_prototype_entries: JsFunction,
+    array_prototype_keys: JsFunction,
+    array_prototype_for_each: JsFunction,
+
     /// [`%Array.prototype.values%`](https://tc39.es/ecma262/#sec-array.prototype.values)
     array_prototype_values: JsFunction,
 
@@ -1185,6 +1189,9 @@ impl IntrinsicObjects {
             math: JsObject::with_null_proto_in(root_shape),
             json: JsObject::with_null_proto_in(root_shape),
             throw_type_error: JsFunction::empty_intrinsic_function(root_shape, false),
+            array_prototype_entries: JsFunction::empty_intrinsic_function(root_shape, false),
+            array_prototype_keys: JsFunction::empty_intrinsic_function(root_shape, false),
+            array_prototype_for_each: JsFunction::empty_intrinsic_function(root_shape, false),
             array_prototype_values: JsFunction::empty_intrinsic_function(root_shape, false),
             array_prototype_to_string: JsFunction::empty_intrinsic_function(root_shape, false),
             iterator_prototypes: IteratorPrototypes::uninit(root_shape),
@@ -1219,6 +1226,33 @@ impl IntrinsicObjects {
     #[must_use]
     pub fn throw_type_error(&self) -> JsFunction {
         self.throw_type_error.clone()
+    }
+
+    /// Gets the original [`%Array.prototype.entries%`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-array.prototype.entries
+    #[inline]
+    #[must_use]
+    pub fn array_prototype_entries(&self) -> JsFunction {
+        self.array_prototype_entries.clone()
+    }
+
+    /// Gets the original [`%Array.prototype.keys%`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-array.prototype.keys
+    #[inline]
+    #[must_use]
+    pub fn array_prototype_keys(&self) -> JsFunction {
+        self.array_prototype_keys.clone()
+    }
+
+    /// Gets the original [`%Array.prototype.forEach%`][spec] intrinsic function.
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-array.prototype.foreach
+    #[inline]
+    #[must_use]
+    pub fn array_prototype_for_each(&self) -> JsFunction {
+        self.array_prototype_for_each.clone()
     }
 
     /// Gets the [`%Array.prototype.values%`][spec] intrinsic function.
