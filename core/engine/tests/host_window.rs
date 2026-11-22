@@ -11,7 +11,7 @@ use boa_engine::{
         FunctionObjectBuilder,
         host::{
             WindowOrigin, immutable_prototype, install_window_index_reader,
-            window_properties, window_proxy,
+            install_window_name_reader, window_properties, window_proxy,
         },
     },
     property::Attribute,
@@ -62,6 +62,49 @@ fn global_accessors_only_observe_the_window_proxy() {
         windowAccess = 42;
         readBinding() === globalThis && readBinding() === globalThis &&
             actualReceiver[0] === globalThis && actualReceiver[1] === 42
+    "#,
+        ))
+        .unwrap();
+    assert_eq!(result.as_boolean(), Some(true));
+}
+
+#[test]
+fn window_names_follow_the_current_ordinary_prototype_descriptors() {
+    let mut context = Context::builder()
+        .host_hooks(Rc::new(WindowHost::default()))
+        .build()
+        .unwrap();
+    let window = context.global_object();
+    let names = window.prototype().unwrap().prototype().unwrap();
+    let reader = FunctionObjectBuilder::new(
+        context.realm(),
+        NativeFunction::from_fn_ptr(|_, arguments, _| {
+            Ok(
+                if arguments
+                    .first()
+                    .and_then(JsValue::as_string)
+                    .is_some_and(|name| name == js_string!("exposedName"))
+                {
+                    JsValue::from(js_string!("native"))
+                } else {
+                    JsValue::undefined()
+                },
+            )
+        }),
+    )
+    .build();
+    assert!(install_window_name_reader(&names, reader.into()));
+
+    let result = context
+        .eval(Source::from_bytes(
+            r#"
+        const prototype = Object.getPrototypeOf(globalThis);
+        Object.defineProperty(prototype, "exposedName", { value: "mask", configurable: true });
+        function readBinding() { return exposedName; }
+        if (readBinding() !== "mask" || readBinding() !== "mask") throw Error("fixture");
+        Reflect.deleteProperty(prototype, "exposedName");
+        readBinding() === "native" && globalThis.exposedName === "native" &&
+            !Reflect.ownKeys(Object.getPrototypeOf(prototype)).includes("exposedName")
     "#,
         ))
         .unwrap();
