@@ -1,15 +1,16 @@
 #![allow(unused_crate_dependencies)]
-//! Assignment through native legacy collection objects.
+//! Property operations on native legacy collection objects.
 
 use boa_engine::{
-    Context, JsObject, JsResult, JsString, JsValue, Source, js_string,
+    Context, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
     object::host::{IndexedProperties, readonly_indexed},
     property::Attribute,
 };
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
-#[derive(Trace, Finalize)]
+#[derive(Clone, Trace, Finalize)]
 struct Collection {
+    names: Gc<GcRefCell<Vec<JsString>>>,
     name_reads: Gc<GcRefCell<usize>>,
 }
 
@@ -36,25 +37,40 @@ impl IndexedProperties for Collection {
         _: &mut Context,
     ) -> JsResult<Option<JsValue>> {
         *self.name_reads.borrow_mut() += 1;
-        Ok((*name == js_string!("named")).then(|| js_string!("native").into()))
+        Ok(self
+            .names
+            .borrow()
+            .contains(name)
+            .then(|| js_string!("native").into()))
     }
+
+    fn named_present(&self, _: &JsObject, name: &JsString, _: &mut Context) -> JsResult<bool> {
+        *self.name_reads.borrow_mut() += 1;
+        Ok(self.names.borrow().contains(name))
+    }
+
+    fn named_keys(&self, _: &JsObject, _: &mut Context) -> JsResult<Vec<JsString>> {
+        Ok(self.names.borrow().clone())
+    }
+}
+
+fn register_collection(context: &mut Context, names: Vec<JsString>) -> Collection {
+    let source = Collection {
+        names: Gc::new(GcRefCell::new(names)),
+        name_reads: Gc::new(GcRefCell::new(0)),
+    };
+    let prototype = JsObject::with_object_proto(context.intrinsics());
+    let collection = readonly_indexed(context.root_shape(), Some(prototype), source.clone());
+    context
+        .register_global_property(js_string!("collection"), collection, Attribute::all())
+        .unwrap();
+    source
 }
 
 #[test]
 fn named_collection_assignment_uses_ordinary_receivers() {
     let mut context = Context::default();
-    let name_reads = Gc::new(GcRefCell::new(0));
-    let prototype = JsObject::with_object_proto(context.intrinsics());
-    let collection = readonly_indexed(
-        context.root_shape(),
-        Some(prototype),
-        Collection {
-            name_reads: Gc::clone(&name_reads),
-        },
-    );
-    context
-        .register_global_property(js_string!("collection"), collection, Attribute::all())
-        .unwrap();
+    let source = register_collection(&mut context, vec![js_string!("named")]);
 
     let assigned = context
         .eval(Source::from_bytes(
@@ -72,7 +88,7 @@ fn named_collection_assignment_uses_ordinary_receivers() {
         .unwrap();
     assert_eq!(assigned.as_boolean(), Some(true));
     assert_eq!(
-        *name_reads.borrow(),
+        *source.name_reads.borrow(),
         0,
         "assignment must skip the native name"
     );
@@ -119,4 +135,191 @@ fn named_collection_assignment_uses_ordinary_receivers() {
         ))
         .unwrap();
     assert_eq!(own.as_boolean(), Some(true));
+}
+
+#[test]
+fn supported_collection_name_refuses_definition_even_when_inherited() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_collection(&mut context, vec![js_string!("item"), js_string!("masked")]);
+    context.eval(Source::from_bytes(
+        r#"
+        const prototype = Object.getPrototypeOf(collection);
+        prototype.item = function item() {};
+        prototype.masked = "inherited";
+        Object.defineProperty(collection, "shadow", { value: 1, writable: true });
+        if (collection.item !== prototype.item || Object.hasOwn(collection, "item")) {
+            throw Error("an inherited method must mask the supported name");
+        }
+        "#,
+    ))?;
+    source.names.borrow_mut().push(js_string!("shadow"));
+    let observation = context.eval(Source::from_bytes(
+        r#"
+        const shadowUpdated = Reflect.defineProperty(collection, "shadow", { value: 2 });
+        const inheritedDefined = Reflect.defineProperty(collection, "item", { value: 3 });
+        let descriptorProbes = 0;
+        Object.setPrototypeOf(collection, new Proxy(prototype, {
+            getOwnPropertyDescriptor(target, key) {
+                descriptorProbes++;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+            }
+        }));
+        let descriptorConversions = 0;
+        const proxyDefined = Reflect.defineProperty(collection, "masked", {
+            get value() { descriptorConversions++; return 4; }
+        });
+        [shadowUpdated, collection.shadow, inheritedDefined, proxyDefined,
+            descriptorProbes, descriptorConversions].join(",")
+        "#,
+    ))?;
+    assert_eq!(
+        observation.as_string(),
+        Some(js_string!("true,2,false,false,0,1")),
+        "a real own shadow stays writable, while supported-name definition refuses without consulting the prototype",
+    );
+    Ok(())
+}
+
+#[test]
+fn numeric_collection_names_are_enumerated_after_indices_without_duplicates() -> JsResult<()> {
+    let mut context = Context::default();
+    register_collection(
+        &mut context,
+        vec![
+            js_string!("before"),
+            js_string!("99"),
+            js_string!("0"),
+            js_string!("01"),
+            js_string!("4294967295"),
+        ],
+    );
+    let reads = context.eval(Source::from_bytes(
+        r#"
+        collection[0] === "indexed" &&
+            collection[99] === undefined &&
+            Object.getOwnPropertyDescriptor(collection, "99") === undefined &&
+            collection["01"] === "native" &&
+            collection["4294967295"] === "native"
+        "#,
+    ))?;
+    assert_eq!(
+        reads.as_boolean(),
+        Some(true),
+        "array-index lookup takes priority"
+    );
+
+    let keys = context.eval(Source::from_bytes(
+        r#"Reflect.ownKeys(collection).join(",")"#,
+    ))?;
+    assert_eq!(
+        keys.as_string(),
+        Some(js_string!("0,before,99,01,4294967295")),
+        "an out-of-range numeric name belongs to the named key group and an indexed collision appears once",
+    );
+    Ok(())
+}
+
+#[test]
+fn repeated_collection_name_checks_visibility_once() -> JsResult<()> {
+    let mut context = Context::default();
+    register_collection(
+        &mut context,
+        vec![js_string!("99"), js_string!("99"), js_string!("visible")],
+    );
+    let keys = context.eval(Source::from_bytes(
+        r#"
+        let seen = 0;
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                if (key === "99" && ++seen === 1) {
+                    return {value: "mask", configurable: true};
+                }
+                return undefined;
+            }
+        }));
+        [Reflect.ownKeys(collection).join(","), seen].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        keys.as_string(),
+        Some(js_string!("0,visible;1")),
+        "one supported name gets one visibility observation",
+    );
+    Ok(())
+}
+
+#[test]
+fn reentrant_collection_keys_keep_the_first_emission() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_collection(&mut context, vec![js_string!("before"), js_string!("99")]);
+    context.register_global_builtin_callable(
+        js_string!("removeBefore"),
+        0,
+        NativeFunction::from_copy_closure_with_captures(
+            |_, _, names, _| {
+                names
+                    .borrow_mut()
+                    .retain(|name| *name != js_string!("before"));
+                Ok(JsValue::undefined())
+            },
+            source.names.clone(),
+        ),
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                if (key === "99") {
+                    removeBefore();
+                    Object.defineProperty(collection, "before", {value: 3, configurable: true});
+                    Object.defineProperty(collection, "later", {value: 4, configurable: true});
+                }
+                return undefined;
+            }
+        }));
+        [Reflect.ownKeys(collection).join(","), collection.before, collection.later].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("0,before,99,later;3;4")),
+        "a key emitted during the named pass must occur once after reentry",
+    );
+    Ok(())
+}
+
+#[test]
+fn named_key_removed_before_visibility_skips_the_later_probe() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_collection(&mut context, vec![js_string!("before"), js_string!("99")]);
+    context.register_global_builtin_callable(
+        js_string!("removeLater"),
+        0,
+        NativeFunction::from_copy_closure_with_captures(
+            |_, _, names, _| {
+                names.borrow_mut().retain(|name| *name != js_string!("99"));
+                Ok(JsValue::undefined())
+            },
+            source.names.clone(),
+        ),
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        const observed = [];
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                observed.push(key);
+                if (key === "before") removeLater();
+                return undefined;
+            }
+        }));
+        [Reflect.ownKeys(collection).join(","), observed.join(",")].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("0,before;before")),
+        "after reentry a later name must still be supported before prototype access",
+    );
+    Ok(())
 }
