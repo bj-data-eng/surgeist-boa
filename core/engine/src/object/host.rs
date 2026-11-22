@@ -83,7 +83,7 @@ impl JsData for WindowProperties {
 /// Each callback receives the native object that owns this source. It observes
 /// the current collection state and projects values from that state.
 pub trait IndexedProperties: Trace + 'static {
-    /// Enables non-enumerable legacy named properties, such as HTMLCollection names.
+    /// Enables non-enumerable legacy named properties, such as `HTMLCollection` names.
     const HAS_NAMED_PROPERTIES: bool = false;
 
     /// Gets the current number of supported indices.
