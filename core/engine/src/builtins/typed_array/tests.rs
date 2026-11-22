@@ -182,3 +182,30 @@ fn typedarray_exotic_prevent_extensions() {
         TestAction::assert("!Object.isExtensible(fixedLengthWithOffset1)"),
     ]);
 }
+
+#[test]
+fn narrow_integer_writes_truncate_and_wrap_large_numbers() {
+    run_test_actions([TestAction::assert(indoc::indoc! {r#"
+        (() => {
+            const samples = [
+                1e40, -(2 ** 63), 2 ** 53 + 2, -(2 ** 53 + 2), 2 ** 32 + 1,
+                128, -129, 32768, -32769, 65536, -1.9, NaN, Infinity, -Infinity, -0
+            ];
+            const cases = [
+                [Int8Array, "Int8", [0, 0, 2, -2, 1, -128, 127, 0, -1, 0, -1, 0, 0, 0, 0]],
+                [Uint8Array, "Uint8", [0, 0, 2, 254, 1, 128, 127, 0, 255, 0, 255, 0, 0, 0, 0]],
+                [Int16Array, "Int16", [0, 0, 2, -2, 1, 128, -129, -32768, 32767, 0, -1, 0, 0, 0, 0]],
+                [Uint16Array, "Uint16", [0, 0, 2, 65534, 1, 128, 65407, 32768, 32767, 0, 65535, 0, 0, 0, 0]]
+            ];
+            return cases.every(([ArrayType, viewType, expected]) => {
+                const array = new ArrayType(samples);
+                const view = new DataView(new ArrayBuffer(2));
+                return expected.every((value, index) => {
+                    view["set" + viewType](0, samples[index]);
+                    return Object.is(array[index], value)
+                        && Object.is(view["get" + viewType](0), value);
+                });
+            });
+        })()
+    "#})]);
+}
