@@ -7,7 +7,10 @@ use boa_macros::{Finalize, Trace};
 
 use crate::{
     JsString,
-    object::shape::{Shape, WeakShape, slot::Slot},
+    object::shape::{
+        Shape, WeakShape,
+        slot::{Slot, SlotAttributes},
+    },
 };
 
 #[cfg(test)]
@@ -80,6 +83,17 @@ impl InlineCache {
             // Polymorphic cache is full, transition to megamorphic.
             self.megamorphic.set(true);
             entries.clear();
+        }
+    }
+
+    /// Caches a named access only while its slot still belongs to the same shape.
+    pub(crate) fn set_after_access(&self, previous: &Shape, current: &Shape, slot: Slot) {
+        // Unique shapes can gain own properties in place. An inherited slot
+        // would still match after an own property shadows it.
+        if previous.to_addr_usize() == current.to_addr_usize()
+            && !(current.is_unique() && slot.attributes.contains(SlotAttributes::PROTOTYPE))
+        {
+            self.set(current, slot);
         }
     }
 

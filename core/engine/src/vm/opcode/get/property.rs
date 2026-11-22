@@ -60,6 +60,7 @@ fn get_by_name<const LENGTH: bool>(
         return Ok(());
     }
 
+    let shape = object_borrowed.shape().clone();
     drop(object_borrowed);
 
     let key: PropertyKey = ic.name.clone().into();
@@ -67,13 +68,10 @@ fn get_by_name<const LENGTH: bool>(
     let context = &mut InternalMethodPropertyContext::new(context);
     let result = object.__get__(&key, receiver.clone(), context)?;
 
-    // Cache the property.
     let slot = *context.slot();
     if slot.is_cacheable() {
         let ic = &context.vm.frame().code_block.ic[usize::from(index)];
-        let object_borrowed = object.borrow();
-        let shape = object_borrowed.shape();
-        ic.set(shape, slot);
+        ic.set_after_access(&shape, object.borrow().shape(), slot);
     }
 
     context.vm.set_register(dst.into(), result);
