@@ -394,7 +394,10 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         if let PropertyKey::String(name) = key
             && T::HAS_NAMED_PROPERTIES
         {
-            if Self::visible_name_present(object, key, name, context)? {
+            // Definition checks support directly. Only a real own property
+            // allows an ordinary definition over a supported name.
+            let has_own = object.borrow().properties.contains_key(key);
+            if !has_own && Self::source(object)?.named_present(object, name, context)? {
                 return Ok(false);
             }
             let current = ordinary_get_own_property(object, key, context)?;
@@ -562,13 +565,18 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
             .ok_or_else(|| JsNativeError::range().with_message("Too many collection properties"))?;
         keys.try_reserve(capacity)
             .map_err(|_| JsNativeError::range().with_message("Too many collection properties"))?;
-        keys.extend(indices.into_iter().map(PropertyKey::from));
+        keys.extend(indices.iter().copied().map(PropertyKey::from));
         let mut seen = HashSet::new();
         for name in names {
             let key = PropertyKey::from(name);
-            if matches!(key, PropertyKey::String(_))
-                && Self::name_is_unmasked(object, &key, &mut None, context)?
-                && seen.insert(key.clone())
+            // A numeric supported name belongs to the named group unless the
+            // same key was already emitted as a supported index.
+            if let PropertyKey::Index(index) = &key
+                && indices.binary_search(&index.get()).is_ok()
+            {
+                continue;
+            }
+            if Self::name_is_unmasked(object, &key, &mut None, context)? && seen.insert(key.clone())
             {
                 keys.push(key);
             }
