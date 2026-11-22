@@ -287,3 +287,39 @@ fn reentrant_collection_keys_keep_the_first_emission() -> JsResult<()> {
     );
     Ok(())
 }
+
+#[test]
+fn named_key_removed_before_visibility_skips_the_later_probe() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_collection(&mut context, vec![js_string!("before"), js_string!("99")]);
+    context.register_global_builtin_callable(
+        js_string!("removeLater"),
+        0,
+        NativeFunction::from_copy_closure_with_captures(
+            |_, _, names, _| {
+                names.borrow_mut().retain(|name| *name != js_string!("99"));
+                Ok(JsValue::undefined())
+            },
+            source.names.clone(),
+        ),
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        const observed = [];
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                observed.push(key);
+                if (key === "before") removeLater();
+                return undefined;
+            }
+        }));
+        [Reflect.ownKeys(collection).join(","), observed.join(",")].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("0,before;before")),
+        "after reentry a later name must still be supported before prototype access",
+    );
+    Ok(())
+}
