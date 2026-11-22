@@ -21,7 +21,8 @@ use super::{
             immutable_prototype_exotic_set_prototype_of,
         },
         ordinary_define_own_property, ordinary_delete, ordinary_get_own_property,
-        ordinary_has_property, ordinary_own_property_keys, validate_and_apply_property_descriptor,
+        ordinary_has_property, ordinary_own_property_keys, ordinary_set,
+        ordinary_set_with_own_descriptor, validate_and_apply_property_descriptor,
     },
     shape::{RootShape, slot::SlotAttributes},
 };
@@ -186,6 +187,11 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         named_descriptor_has_effects: T::HAS_NAMED_PROPERTIES,
         __define_own_property__: Self::define_own_property,
         __has_property__: Self::has_property,
+        __set__: if T::HAS_NAMED_PROPERTIES {
+            Self::set
+        } else {
+            ordinary_set
+        },
         __delete__: Self::delete,
         __own_property_keys__: Self::own_property_keys,
         __prevent_extensions__: |_, _| Ok(false),
@@ -239,6 +245,34 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
             .enumerable(enumerable)
             .configurable(true)
             .build()
+    }
+
+    fn set(
+        object: &JsObject,
+        key: PropertyKey,
+        value: JsValue,
+        receiver: JsValue,
+        context: &mut InternalMethodPropertyContext<'_>,
+    ) -> JsResult<bool> {
+        if matches!(key, PropertyKey::String(_)) {
+            // Web IDL legacy platform object [[Set]] requests the target
+            // descriptor with ignoreNamedProps set to true.
+            let own_desc = ordinary_get_own_property(object, &key, context)?;
+            let has_own_desc = own_desc.is_some();
+            let result =
+                ordinary_set_with_own_descriptor(object, key, value, receiver, own_desc, context);
+            if !has_own_desc {
+                // A prototype setter can install an own property during the
+                // write. Do not cache that slot against the collection's shape.
+                context
+                    .slot()
+                    .attributes
+                    .insert(SlotAttributes::NOT_CACHEABLE);
+            }
+            result
+        } else {
+            ordinary_set(object, key, value, receiver, context)
+        }
     }
 
     fn define_own_property(
