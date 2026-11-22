@@ -76,6 +76,105 @@ fn register_collection(context: &mut Context, names: Vec<JsString>) -> Collectio
     source
 }
 
+#[derive(Trace, Finalize)]
+struct IndexedMembership {
+    refuse_value: Gc<GcRefCell<bool>>,
+    refusal: JsObject,
+}
+
+impl IndexedProperties for IndexedMembership {
+    fn index_count(&self, _: &JsObject, _: &mut Context) -> JsResult<u32> {
+        Ok(1)
+    }
+
+    fn indexed_value(
+        &self,
+        _: &JsObject,
+        index: u32,
+        _: &mut Context,
+    ) -> JsResult<Option<JsValue>> {
+        if index != 0 {
+            return Ok(None);
+        }
+        if *self.refuse_value.borrow() {
+            return Err(JsError::from_opaque(self.refusal.clone().into()));
+        }
+        Ok(Some(js_string!("indexed").into()))
+    }
+
+    fn index_present(&self, _: &JsObject, index: u32, _: &mut Context) -> JsResult<bool> {
+        Ok(index == 0)
+    }
+}
+
+#[test]
+fn indexed_membership_propagates_the_live_descriptor_error() -> JsResult<()> {
+    let mut context = Context::default();
+    let refuse_value = Gc::new(GcRefCell::new(true));
+    let refusal = JsObject::with_object_proto(context.intrinsics());
+    let prototype = JsObject::with_object_proto(context.intrinsics());
+    let collection = readonly_indexed(
+        context.root_shape(),
+        Some(prototype),
+        IndexedMembership {
+            refuse_value: refuse_value.clone(),
+            refusal: refusal.clone(),
+        },
+    );
+    context.register_global_property(js_string!("refusal"), refusal, Attribute::all())?;
+    context.register_global_property(js_string!("collection"), collection, Attribute::all())?;
+
+    let cold = context.eval(Source::from_bytes(
+        r#"
+        const prototype = Object.getPrototypeOf(collection);
+        prototype[0] = "shadowed";
+        prototype[1] = "inherited";
+        const hasIndex = () => Reflect.has(collection, "0");
+        const indexIn = () => 0 in collection;
+        const sawRefusal = action => {
+            try { action(); } catch (error) { return error === refusal; }
+            return false;
+        };
+        [
+            sawRefusal(hasIndex),
+            sawRefusal(indexIn),
+            sawRefusal(() => Reflect.getOwnPropertyDescriptor(collection, 0)),
+            Reflect.deleteProperty(collection, 0) === false,
+            Reflect.deleteProperty(collection, 1) && collection[1] === "inherited"
+                && Reflect.has(collection, 1) && 1 in collection,
+            !Reflect.has(collection, 2) && !(2 in collection)
+        ].join(";")
+        "#,
+    ))?;
+
+    *refuse_value.borrow_mut() = false;
+    let success = context.eval(Source::from_bytes(
+        r#"hasIndex() && indexIn() && collection[0] === "indexed""#,
+    ))?;
+    assert_eq!(success.as_boolean(), Some(true));
+
+    *refuse_value.borrow_mut() = true;
+    let repeated = context.eval(Source::from_bytes(
+        r"
+        let reflectRefused = true, inRefused = true;
+        for (let n = 0; n < 32; ++n) {
+            reflectRefused = sawRefusal(hasIndex) && reflectRefused;
+            inRefused = sawRefusal(indexIn) && inRefused;
+        }
+        [reflectRefused, inRefused].join(';')
+        ",
+    ))?;
+    assert_eq!(
+        (cold.as_string(), repeated.as_string()),
+        (
+            Some(js_string!("true;true;true;true;true;true")),
+            Some(js_string!("true;true")),
+        ),
+        "cold and repeated membership must carry the original descriptor error",
+    );
+    Ok(())
+}
+
 impl NamedOverrideProperties for Collection {
     fn named_keys(&self, holder: &JsObject, context: &mut Context) -> JsResult<Vec<JsString>> {
         IndexedProperties::named_keys(self, holder, context)
