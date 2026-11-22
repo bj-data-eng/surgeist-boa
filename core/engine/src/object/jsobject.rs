@@ -1069,6 +1069,11 @@ impl<T: NativeObject> JsObject<T> {
         self.inner.vtable
     }
 
+    #[cfg(feature = "annex-b")]
+    pub(crate) fn has_is_html_dda(&self) -> bool {
+        self.vtable().has_is_html_dda
+    }
+
     pub(crate) fn inner(&self) -> &Gc<VTableObject<T>> {
         &self.inner
     }

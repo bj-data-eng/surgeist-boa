@@ -1,6 +1,4 @@
 use super::{JsBigInt, JsObject, JsResult, JsValue, PreferredType};
-#[cfg(feature = "annex-b")]
-use crate::builtins::is_html_dda::IsHTMLDDA;
 use crate::{Context, JsVariant, builtins::Number};
 use std::collections::HashSet;
 
@@ -80,13 +78,13 @@ impl JsValue {
             // B.3.6.2: Objects with [[IsHTMLDDA]] are loosely equal to null and undefined.
             #[cfg(feature = "annex-b")]
             (JsVariant::Object(ref obj), JsVariant::Null | JsVariant::Undefined)
-                if obj.is::<IsHTMLDDA>() =>
+                if obj.has_is_html_dda() =>
             {
                 true
             }
             #[cfg(feature = "annex-b")]
             (JsVariant::Null | JsVariant::Undefined, JsVariant::Object(ref obj))
-                if obj.is::<IsHTMLDDA>() =>
+                if obj.has_is_html_dda() =>
             {
                 true
             }

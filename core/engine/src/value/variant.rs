@@ -1,5 +1,3 @@
-#[cfg(feature = "annex-b")]
-use crate::builtins::is_html_dda::IsHTMLDDA;
 use crate::{JsBigInt, JsObject, JsSymbol, JsValue};
 use boa_engine::js_string;
 use boa_string::JsString;
@@ -74,7 +72,7 @@ impl JsVariant {
             JsVariant::BigInt(_) => "bigint",
             JsVariant::Object(object) => {
                 #[cfg(feature = "annex-b")]
-                if object.is::<IsHTMLDDA>() {
+                if object.has_is_html_dda() {
                     return "undefined";
                 }
                 if object.is_callable() {
@@ -99,7 +97,7 @@ impl JsVariant {
             JsVariant::BigInt(_) => js_string!("bigint"),
             JsVariant::Object(object) => {
                 #[cfg(feature = "annex-b")]
-                if object.is::<IsHTMLDDA>() {
+                if object.has_is_html_dda() {
                     return js_string!("undefined");
                 }
                 if object.is_callable() {

@@ -106,8 +106,6 @@
 //! with regular NAN should happen.
 #![allow(clippy::inline_always)]
 
-#[cfg(feature = "annex-b")]
-use crate::builtins::is_html_dda::IsHTMLDDA;
 use crate::{
     JsBigInt, JsObject, JsSymbol, JsVariant, bigint::RawBigInt, object::ErasedVTableObject,
     symbol::RawJsSymbol, value::Type,
@@ -765,7 +763,7 @@ impl NanBoxedValue {
                 #[cfg(feature = "annex-b")]
                 {
                     // SAFETY: tag confirmed this is an Object.
-                    if unsafe { self.as_object_unchecked().is::<IsHTMLDDA>() } {
+                    if unsafe { self.as_object_unchecked().has_is_html_dda() } {
                         return false;
                     }
                 }

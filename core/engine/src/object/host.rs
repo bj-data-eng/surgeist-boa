@@ -30,6 +30,11 @@ use super::{
     },
     shape::{RootShape, slot::SlotAttributes},
 };
+#[cfg(feature = "annex-b")]
+use super::{
+    builtins::JsFunction,
+    internal_methods::{CallValue, InternalMethodCallContext},
+};
 
 /// Creates an extensible host object with an immutable guest-visible prototype.
 ///
@@ -283,7 +288,36 @@ pub fn readonly_indexed<T: IndexedProperties>(
     prototype: JsPrototype,
     source: T,
 ) -> JsObject {
-    JsObject::from_proto_and_data_in(root_shape, prototype, ReadOnlyIndices(Gc::new(source)))
+    JsObject::from_proto_and_data_in(
+        root_shape,
+        prototype,
+        ReadOnlyIndices {
+            source: Gc::new(source),
+            #[cfg(feature = "annex-b")]
+            call: None,
+        },
+    )
+}
+
+/// Creates a legacy indexed object with the Annex B `[[IsHTMLDDA]]` slot.
+/// Calls invoke the retained callback with the actual collection as its
+/// receiver and the untouched argument list. The collection cannot construct.
+#[cfg(feature = "annex-b")]
+#[must_use]
+pub fn readonly_indexed_with_html_dda<T: IndexedProperties>(
+    root_shape: &RootShape,
+    prototype: JsPrototype,
+    source: T,
+    call: JsFunction,
+) -> JsObject {
+    JsObject::from_proto_and_data_in(
+        root_shape,
+        prototype,
+        ReadOnlyIndices {
+            source: Gc::new(source),
+            call: Some(call),
+        },
+    )
 }
 
 /// Returns the source if the object itself carries the specified native data.
@@ -291,11 +325,15 @@ pub fn readonly_indexed<T: IndexedProperties>(
 pub fn readonly_indexed_source<T: IndexedProperties>(object: &JsObject) -> Option<Gc<T>> {
     object
         .downcast_ref::<ReadOnlyIndices<T>>()
-        .map(|data| Gc::clone(&data.0))
+        .map(|data| Gc::clone(&data.source))
 }
 
 #[derive(Trace, Finalize)]
-struct ReadOnlyIndices<T: IndexedProperties>(Gc<T>);
+struct ReadOnlyIndices<T: IndexedProperties> {
+    source: Gc<T>,
+    #[cfg(feature = "annex-b")]
+    call: Option<JsFunction>,
+}
 
 #[derive(Default)]
 struct NamedVisibility<'name> {
@@ -314,6 +352,10 @@ impl<'name> NamedVisibility<'name> {
 
 impl<T: IndexedProperties> JsData for ReadOnlyIndices<T> {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
+        #[cfg(feature = "annex-b")]
+        if self.call.is_some() {
+            return &Self::HTML_DDA_METHODS;
+        }
         &Self::METHODS
     }
 }
@@ -334,6 +376,29 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         __prevent_extensions__: |_, _| Ok(false),
         ..ORDINARY_INTERNAL_METHODS
     };
+
+    #[cfg(feature = "annex-b")]
+    const HTML_DDA_METHODS: InternalObjectMethods = InternalObjectMethods {
+        __call__: Self::call,
+        has_is_html_dda: true,
+        ..Self::METHODS
+    };
+
+    #[cfg(feature = "annex-b")]
+    fn call(
+        object: &JsObject,
+        argument_count: usize,
+        context: &mut InternalMethodCallContext<'_>,
+    ) -> JsResult<CallValue> {
+        let callback = object
+            .downcast_ref::<Self>()
+            .and_then(|data| data.call.clone())
+            .ok_or_else(|| JsNativeError::typ().with_message("Expected a callable collection"))?;
+        let stack = &mut context.vm.stack;
+        stack.calling_convention_set_this(argument_count, object.clone().into());
+        stack.calling_convention_set_function(argument_count, callback.clone().into());
+        Ok(callback.__call__(argument_count))
+    }
 
     fn source(object: &JsObject) -> JsResult<Gc<T>> {
         readonly_indexed_source(object).ok_or_else(|| {

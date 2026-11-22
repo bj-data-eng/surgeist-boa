@@ -381,6 +381,8 @@ pub(crate) const ORDINARY_INTERNAL_METHODS: InternalObjectMethods = InternalObje
     __prevent_extensions__: ordinary_prevent_extensions,
     __get_own_property__: ordinary_get_own_property,
     named_descriptor_has_effects: false,
+    #[cfg(feature = "annex-b")]
+    has_is_html_dda: false,
     __define_own_property__: ordinary_define_own_property,
     __has_property__: ordinary_has_property,
     __try_get__: ordinary_try_get,
@@ -409,6 +411,8 @@ pub struct InternalObjectMethods {
     /// A named own-descriptor lookup can call guest code, reenter another
     /// descriptor lookup, or throw based on object state.
     pub(crate) named_descriptor_has_effects: bool,
+    #[cfg(feature = "annex-b")]
+    pub(crate) has_is_html_dda: bool,
     pub(crate) __get_own_property__: fn(
         &JsObject,
         &PropertyKey,

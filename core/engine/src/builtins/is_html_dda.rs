@@ -36,6 +36,7 @@ impl JsData for IsHTMLDDA {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
         static IS_HTML_DDA_INTERNAL_METHODS: InternalObjectMethods = InternalObjectMethods {
             __call__: is_html_dda_call,
+            has_is_html_dda: true,
             ..ORDINARY_INTERNAL_METHODS
         };
         &IS_HTML_DDA_INTERNAL_METHODS
