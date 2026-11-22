@@ -255,6 +255,21 @@ pub trait IndexedProperties: Trace + 'static {
     ) -> JsResult<bool> {
         Ok(self.named_value(holder, name, context)?.is_some())
     }
+
+    /// Runs the interface's named getter after a reentrant visibility check.
+    /// The name can have stopped being supported since visibility accepted it.
+    /// Override this if the getter differs from the exact lookup or returns
+    /// something other than null when the name is missing.
+    fn named_getter(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
+        Ok(self
+            .named_value(holder, name, context)?
+            .unwrap_or_else(JsValue::null))
+    }
 }
 
 /// Creates a read-only legacy indexed object with ordinary prototype methods.
@@ -342,19 +357,28 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
                 .indexed_value(object, index.get(), context)?
                 .map(|value| Self::descriptor(value, true)));
         }
-        let ordinary = ordinary_get_own_property(object, key, context)?;
+        let mut ordinary = ordinary_get_own_property(object, key, context)?;
         if let PropertyKey::String(name) = key
             && T::HAS_NAMED_PROPERTIES
             && ordinary.is_none()
         {
+            let mut visibility = NamedVisibility::lookup(name);
+            let visible = Self::name_is_unmasked(object, key, &mut visibility, context)?;
+            if !visible && visibility.reached_effectful_descriptor {
+                ordinary = ordinary_get_own_property(object, key, context)?;
+            }
             context
                 .slot()
                 .attributes
                 .insert(SlotAttributes::NOT_CACHEABLE);
-            if Self::name_is_unmasked(object, key, &mut NamedVisibility::lookup(name), context)? {
-                return Ok(Self::source(object)?
-                    .named_value(object, name, context)?
-                    .map(|value| Self::descriptor(value, false)));
+            if visible {
+                let source = Self::source(object)?;
+                let value = if visibility.unchecked_name.is_none() {
+                    Some(source.named_getter(object, name, context)?)
+                } else {
+                    source.named_value(object, name, context)?
+                };
+                return Ok(value.map(|value| Self::descriptor(value, false)));
             }
         }
         Ok(ordinary)
@@ -438,8 +462,8 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
                 Self::source(object)?.index_present(object, index.get(), context)?
             }
             PropertyKey::String(name) if T::HAS_NAMED_PROPERTIES => {
-                ordinary_get_own_property(object, key, context)?.is_some()
-                    || Self::visible_name_present(object, key, name, context)?
+                Self::visible_name_present(object, key, name, context)?
+                    || ordinary_get_own_property(object, key, context)?.is_some()
             }
             _ => return ordinary_has_property(object, key, context),
         };
@@ -466,14 +490,16 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
                 Ok(!Self::source(object)?.index_present(object, index.get(), context)?)
             }
             PropertyKey::String(name) if T::HAS_NAMED_PROPERTIES => {
+                if Self::visible_name_present(object, key, name, context)? {
+                    return Ok(false);
+                }
                 if let Some(descriptor) = ordinary_get_own_property(object, key, context)? {
                     if !descriptor.expect_configurable() {
                         return Ok(false);
                     }
                     object.borrow_mut().remove(key);
-                    return Ok(true);
                 }
-                Ok(!Self::visible_name_present(object, key, name, context)?)
+                Ok(true)
             }
             _ => ordinary_delete(object, key, context),
         }
