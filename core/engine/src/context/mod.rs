@@ -106,6 +106,7 @@ pub struct Context {
     pub(crate) vm: Vm,
 
     pub(crate) kept_alive: Vec<JsObject>,
+    pub(crate) active_named_properties: Vec<(JsObject, PropertyKey)>,
 
     can_block: bool,
 
@@ -1252,6 +1253,7 @@ impl ContextBuilder {
             #[cfg(feature = "fuzz")]
             instructions_remaining: self.instructions_remaining,
             kept_alive: Vec::new(),
+            active_named_properties: Vec::new(),
             host_hooks,
             clock,
             job_executor,

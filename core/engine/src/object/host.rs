@@ -5,7 +5,10 @@ use std::collections::HashSet;
 use boa_gc::{Finalize, Gc, Trace};
 
 use crate::{
-    Context, JsNativeError, JsResult, JsString, JsSymbol, JsValue, js_string,
+    Context, JsNativeError, JsResult, JsString, JsSymbol, JsValue,
+    context::ContextCleanupGuard,
+    error::RuntimeLimitError,
+    js_string,
     property::{PropertyDescriptor, PropertyKey},
 };
 
@@ -180,6 +183,7 @@ impl<T: IndexedProperties> JsData for ReadOnlyIndices<T> {
 impl<T: IndexedProperties> ReadOnlyIndices<T> {
     const METHODS: InternalObjectMethods = InternalObjectMethods {
         __get_own_property__: Self::get_own_property,
+        named_descriptor_has_effects: T::HAS_NAMED_PROPERTIES,
         __define_own_property__: Self::define_own_property,
         __has_property__: Self::has_property,
         __delete__: Self::delete,
@@ -219,7 +223,7 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
                 .slot()
                 .attributes
                 .insert(SlotAttributes::NOT_CACHEABLE);
-            if Self::name_is_unmasked(object, key, context)? {
+            if Self::name_is_unmasked(object, key, &mut Some(name), context)? {
                 return Ok(Self::source(object)?
                     .named_value(object, name, context)?
                     .map(|value| Self::descriptor(value, false)));
@@ -322,32 +326,81 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         name: &JsString,
         context: &mut Context,
     ) -> JsResult<bool> {
-        Ok(Self::name_is_unmasked(object, key, context)?
-            && Self::source(object)?.named_present(object, name, context)?)
+        let mut unchecked_name = Some(name);
+        if !Self::name_is_unmasked(object, key, &mut unchecked_name, context)? {
+            return Ok(false);
+        }
+        match unchecked_name {
+            Some(name) => Self::source(object)?.named_present(object, name, context),
+            None => Ok(true),
+        }
     }
 
     fn name_is_unmasked(
         object: &JsObject,
         key: &PropertyKey,
+        unchecked_name: &mut Option<&JsString>,
         context: &mut Context,
     ) -> JsResult<bool> {
-        // Only ordinary fields mask names. In particular, another collection's
-        // synthesized property is not an ordinary prototype field.
+        // An ordinary own field of the collection masks its synthesized name.
+        if object.borrow().properties.get(key).is_some() {
+            return Ok(false);
+        }
+        if context
+            .active_named_properties
+            .iter()
+            .any(|(holder, name)| holder == object && name == key)
+        {
+            return Ok(false);
+        }
+        // Proxy forwarding and host descriptors can recurse without adding VM
+        // frames. Bound the native traversal as well as the normal VM recursion.
+        let limit = context.runtime_limits().recursion_limit().min(64);
+        if context.active_named_properties.len() >= limit {
+            return Err(RuntimeLimitError::Recursion.into());
+        }
+        context
+            .active_named_properties
+            .try_reserve(1)
+            .map_err(|_| JsNativeError::range().with_message("Too many active named properties"))?;
+        context
+            .active_named_properties
+            .push((object.clone(), key.clone()));
+        let mut guard = ContextCleanupGuard::new(context, |context| {
+            drop(context.active_named_properties.pop());
+        });
+        let context = &mut *guard;
+
         let mut visited = vec![object.clone()];
         let mut current = object.clone();
-        loop {
-            if current.borrow().properties.get(key).is_some() {
-                return Ok(false);
-            }
-            let Some(prototype) = current.__get_prototype_of__(context)? else {
-                return Ok(true);
-            };
+        while let Some(prototype) = current.__get_prototype_of__(context)? {
             if visited.contains(&prototype) {
                 return Ok(false);
             }
             visited.push(prototype.clone());
+            if !prototype.is::<WindowProperties>() {
+                // Check support before a descriptor lookup with observable
+                // effects and retain that answer for
+                // the rest of this traversal. Own-key enumeration already knows.
+                if let Some(name) = *unchecked_name
+                    && prototype.vtable().named_descriptor_has_effects
+                {
+                    if !Self::source(object)?.named_present(object, name, context)? {
+                        return Ok(false);
+                    }
+                    *unchecked_name = None;
+                }
+                let mut descriptor_context = InternalMethodPropertyContext::new(context);
+                if prototype
+                    .__get_own_property__(key, &mut descriptor_context)?
+                    .is_some()
+                {
+                    return Ok(false);
+                }
+            }
             current = prototype;
         }
+        Ok(true)
     }
 
     fn own_property_keys(object: &JsObject, context: &mut Context) -> JsResult<Vec<PropertyKey>> {
@@ -373,7 +426,7 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         for name in names {
             let key = PropertyKey::from(name);
             if matches!(key, PropertyKey::String(_))
-                && Self::name_is_unmasked(object, &key, context)?
+                && Self::name_is_unmasked(object, &key, &mut None, context)?
                 && seen.insert(key.clone())
             {
                 keys.push(key);

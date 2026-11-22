@@ -380,6 +380,7 @@ pub(crate) const ORDINARY_INTERNAL_METHODS: InternalObjectMethods = InternalObje
     __is_extensible__: ordinary_is_extensible,
     __prevent_extensions__: ordinary_prevent_extensions,
     __get_own_property__: ordinary_get_own_property,
+    named_descriptor_has_effects: false,
     __define_own_property__: ordinary_define_own_property,
     __has_property__: ordinary_has_property,
     __try_get__: ordinary_try_get,
@@ -405,6 +406,9 @@ pub struct InternalObjectMethods {
     pub(crate) __set_prototype_of__: fn(&JsObject, JsPrototype, &mut Context) -> JsResult<bool>,
     pub(crate) __is_extensible__: fn(&JsObject, &mut Context) -> JsResult<bool>,
     pub(crate) __prevent_extensions__: fn(&JsObject, &mut Context) -> JsResult<bool>,
+    /// A named own-descriptor lookup can call guest code, reenter another
+    /// descriptor lookup, or throw based on object state.
+    pub(crate) named_descriptor_has_effects: bool,
     pub(crate) __get_own_property__: fn(
         &JsObject,
         &PropertyKey,

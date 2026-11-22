@@ -48,6 +48,7 @@ impl JsData for ModuleNamespace {
             __is_extensible__: module_namespace_exotic_is_extensible,
             __prevent_extensions__: module_namespace_exotic_prevent_extensions,
             __get_own_property__: module_namespace_exotic_get_own_property,
+            named_descriptor_has_effects: true,
             __define_own_property__: module_namespace_exotic_define_own_property,
             __has_property__: module_namespace_exotic_has_property,
             __try_get__: module_namespace_exotic_try_get,
