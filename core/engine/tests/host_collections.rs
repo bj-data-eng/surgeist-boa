@@ -3,9 +3,12 @@
 
 use boa_engine::{
     Context, JsError, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
-    object::host::{
-        IndexedProperties, NamedOverrideProperties, named_override, named_override_source,
-        readonly_indexed,
+    object::{
+        WeakJsObject,
+        host::{
+            IndexedProperties, MutableNamedOverrideProperties, NamedOverrideProperties,
+            mutable_named_override, named_override, named_override_source, readonly_indexed,
+        },
     },
     property::Attribute,
 };
@@ -172,6 +175,337 @@ fn indexed_membership_propagates_the_live_descriptor_error() -> JsResult<()> {
         ),
         "cold and repeated membership must carry the original descriptor error",
     );
+    Ok(())
+}
+
+#[derive(Clone, Trace, Finalize)]
+struct MutableNamedFixture {
+    holder: Gc<GcRefCell<Option<WeakJsObject>>>,
+    pairs: Gc<GcRefCell<Vec<(JsString, JsString)>>>,
+    deletions: Gc<GcRefCell<Vec<JsString>>>,
+    presence_refusal: Gc<GcRefCell<Option<(JsString, usize)>>>,
+    refusal: JsObject,
+}
+
+impl MutableNamedFixture {
+    fn check_holder(&self, holder: &JsObject) {
+        let saved = self.holder.borrow();
+        let actual = saved.as_ref().and_then(WeakJsObject::upgrade).unwrap();
+        assert!(JsObject::equals(holder, &actual));
+    }
+
+    fn refusal(&self) -> JsError {
+        JsError::from_opaque(self.refusal.clone().into())
+    }
+}
+
+impl NamedOverrideProperties for MutableNamedFixture {
+    fn named_value(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        _: &mut Context,
+    ) -> JsResult<Option<JsValue>> {
+        self.check_holder(holder);
+        if *name == js_string!("guarded") {
+            return Err(self.refusal());
+        }
+        Ok(self
+            .pairs
+            .borrow()
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone().into()))
+    }
+
+    fn named_present(&self, holder: &JsObject, name: &JsString, _: &mut Context) -> JsResult<bool> {
+        self.check_holder(holder);
+        if let Some((refused_name, remaining)) = &mut *self.presence_refusal.borrow_mut()
+            && refused_name == name
+        {
+            if *remaining == 0 {
+                return Err(self.refusal());
+            }
+            *remaining -= 1;
+        }
+        Ok(self.pairs.borrow().iter().any(|(key, _)| key == name))
+    }
+
+    fn named_keys(&self, holder: &JsObject, _: &mut Context) -> JsResult<Vec<JsString>> {
+        self.check_holder(holder);
+        Ok(self
+            .pairs
+            .borrow()
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect())
+    }
+
+    fn is_unforgeable_name(&self, name: &JsString) -> bool {
+        *name == js_string!("fixed")
+    }
+}
+
+impl MutableNamedOverrideProperties for MutableNamedFixture {
+    fn set_named_value(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        value: &JsValue,
+        context: &mut Context,
+    ) -> JsResult<()> {
+        self.check_holder(holder);
+        if *name == js_string!("setterError") {
+            return Err(self.refusal());
+        }
+        let value = value.to_string(context)?;
+        let mut pairs = self.pairs.borrow_mut();
+        if let Some((_, current)) = pairs.iter_mut().find(|(key, _)| key == name) {
+            *current = value;
+        } else {
+            pairs.push((name.clone(), value));
+        }
+        Ok(())
+    }
+
+    fn delete_named_value(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        _: &mut Context,
+    ) -> JsResult<()> {
+        self.check_holder(holder);
+        if *name == js_string!("deleterError") {
+            return Err(self.refusal());
+        }
+        self.deletions.borrow_mut().push(name.clone());
+        self.pairs.borrow_mut().retain(|(key, _)| key != name);
+        Ok(())
+    }
+}
+
+fn register_mutable_named(context: &mut Context, names: &[&str]) -> JsResult<MutableNamedFixture> {
+    let fixture = MutableNamedFixture {
+        holder: Gc::new(GcRefCell::new(None)),
+        pairs: Gc::new(GcRefCell::new(
+            names
+                .iter()
+                .map(|name| (JsString::from(*name), js_string!("native")))
+                .collect(),
+        )),
+        deletions: Gc::new(GcRefCell::new(Vec::new())),
+        presence_refusal: Gc::new(GcRefCell::new(None)),
+        refusal: JsObject::with_object_proto(context.intrinsics()),
+    };
+    let prototype = JsObject::with_object_proto(context.intrinsics());
+    let host = mutable_named_override(context.root_shape(), Some(prototype), fixture.clone());
+    let source = named_override_source::<MutableNamedFixture>(&host).unwrap();
+    assert!(Gc::ptr_eq(&fixture.pairs, &source.pairs));
+    *fixture.holder.borrow_mut() = Some(host.downgrade());
+    context.register_global_property(js_string!("mutableHost"), host, Attribute::all())?;
+    context.register_global_property(
+        js_string!("nativeRefusal"),
+        fixture.refusal.clone(),
+        Attribute::all(),
+    )?;
+    Ok(fixture)
+}
+
+#[test]
+fn mutable_named_override_routes_same_holder_writes_and_updates_live_keys() -> JsResult<()> {
+    let mut context = Context::default();
+    let fixture = register_mutable_named(&mut context, &["seed"])?;
+    let result = context.eval(Source::from_bytes(
+        r#"
+        const proto = Object.getPrototypeOf(mutableHost);
+        let prototypeWrites = 0;
+        Object.defineProperty(proto, "shadowed", {set(_) { ++prototypeWrites; }});
+        proto[7] = "inherited numeric";
+        const numeric = Reflect.set(mutableHost, 7, 71);
+        mutableHost.shadowed = 42;
+        mutableHost["01"] = "leading zero";
+        const d = Object.getOwnPropertyDescriptor(mutableHost, "7");
+        const own = numeric && d?.value === "71" && d.writable && d.enumerable && d.configurable
+            && mutableHost.shadowed === "42" && prototypeWrites === 0;
+        const ordered = Object.keys(mutableHost).join() === "seed,7,shadowed,01";
+
+        proto.cached = "inherited";
+        const read = () => mutableHost.cached;
+        const write = value => { mutableHost.cached = value; };
+        for (let n = 0; n < 32; ++n) {
+            if (read() !== "inherited") throw Error("warm read");
+        }
+        write("first"); const first = read();
+        write("second"); const second = read();
+        const deleted = Reflect.deleteProperty(mutableHost, "cached")
+            && Reflect.deleteProperty(mutableHost, "cached")
+            && Reflect.deleteProperty(mutableHost, "missing");
+        own && ordered && first === "first" && second === "second" && deleted
+            && read() === "inherited" && !Reflect.preventExtensions(mutableHost)
+        "#,
+    ))?;
+    assert_eq!(result.as_boolean(), Some(true));
+    assert_eq!(&*fixture.deletions.borrow(), &[js_string!("cached")]);
+    Ok(())
+}
+
+#[test]
+fn mutable_named_override_preserves_alternate_receivers_and_ordinary_own_fields() -> JsResult<()> {
+    let mut context = Context::default();
+    let fixture = register_mutable_named(&mut context, &["guarded", "fixed"])?;
+    let result = context.eval(Source::from_bytes(
+        r#"
+        const other = {};
+        const alternate = Reflect.set(mutableHost, "guarded", "other", other)
+            && other.guarded === "other";
+        const child = Object.create(mutableHost);
+        const inherited = Reflect.set(mutableHost, "childOnly", "child", child)
+            && child.childOnly === "child" && !Object.hasOwn(mutableHost, "childOnly");
+        let inheritedReceiver;
+        Object.defineProperty(Object.getPrototypeOf(mutableHost), "inheritedSetter", {
+            set(_) { inheritedReceiver = this; }
+        });
+        const setter = Reflect.set(mutableHost, "inheritedSetter", 7, other)
+            && inheritedReceiver === other && !Object.hasOwn(mutableHost, "inheritedSetter");
+        const sym = Symbol("ordinary");
+        const symbol = Reflect.defineProperty(mutableHost, sym, {value: 4, writable: true, configurable: true})
+            && Reflect.set(mutableHost, sym, 5) && mutableHost[sym] === 5;
+        const fixed = Reflect.defineProperty(mutableHost, "fixed", {value: "own", configurable: true})
+            && mutableHost.fixed === "own"
+            && Reflect.ownKeys(mutableHost).at(-1) === sym
+            && Reflect.deleteProperty(mutableHost, "fixed") && mutableHost.fixed === "native";
+        alternate && inherited && setter && symbol && fixed && Reflect.deleteProperty(mutableHost, sym)
+        "#,
+    ))?;
+    assert_eq!(result.as_boolean(), Some(true));
+    assert_eq!(fixture.pairs.borrow().len(), 2);
+    assert!(fixture.deletions.borrow().is_empty());
+    Ok(())
+}
+
+#[test]
+fn mutable_named_override_routes_data_descriptors_and_preserves_abrupt_completions() -> JsResult<()>
+{
+    let mut context = Context::default();
+    register_mutable_named(&mut context, &["deleterError"])?;
+    let result = context.eval(Source::from_bytes(
+        r#"
+        let reads = 0, conversions = 0;
+        const data = Reflect.defineProperty(mutableHost, "converted", {get value() {
+            ++reads;
+            return {toString() {
+                ++conversions;
+                mutableHost.inner = "reentered";
+                return "converted";
+            }};
+        }}) && mutableHost.converted === "converted" && reads === 1 && conversions === 1
+            && mutableHost.inner === "reentered"
+            && Reflect.defineProperty(mutableHost, "defaultValue", {writable: false})
+            && mutableHost.defaultValue === "undefined";
+        const rejected = !Reflect.defineProperty(mutableHost, "generic", {configurable: true})
+            && !Reflect.defineProperty(mutableHost, "accessor", {get() { throw Error("getter ran"); }})
+            && !Reflect.defineProperty(mutableHost, "converted", {enumerable: false})
+            && !Object.hasOwn(mutableHost, "generic") && !Object.hasOwn(mutableHost, "accessor");
+        const throws = (action, sentinel) => {
+            try { action(); } catch (error) { return error === sentinel; }
+            return false;
+        };
+        const conversionError = {};
+        const abrupt = throws(() => { mutableHost.setterError = 1; }, nativeRefusal)
+            && throws(() => Reflect.defineProperty(mutableHost, "setterError", {value: 1}), nativeRefusal)
+            && throws(() => Reflect.deleteProperty(mutableHost, "deleterError"), nativeRefusal)
+            && throws(() => { mutableHost.failed = {toString() { throw conversionError; }}; }, conversionError)
+            && mutableHost.deleterError === "native" && !Object.hasOwn(mutableHost, "failed");
+        data && rejected && abrupt
+        "#,
+    ))?;
+    assert_eq!(result.as_boolean(), Some(true));
+    Ok(())
+}
+
+#[test]
+fn mutable_named_override_support_is_rechecked_for_definitions() -> JsResult<()> {
+    let mut context = Context::default();
+    let fixture = register_mutable_named(&mut context, &["probe"])?;
+    *fixture.presence_refusal.borrow_mut() = Some((js_string!("probe"), 1));
+    let assigned = context.eval(Source::from_bytes(
+        r#"Reflect.set(mutableHost, "probe", "assigned")"#,
+    ))?;
+    assert_eq!(assigned.as_boolean(), Some(true));
+
+    *fixture.presence_refusal.borrow_mut() = Some((js_string!("probe"), 1));
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        let conversions = 0;
+        let completion;
+        try {
+            completion = Reflect.defineProperty(mutableHost, "probe", {
+                value: {toString() { ++conversions; return "replaced"; }}
+            });
+        } catch (error) {
+            completion = error === nativeRefusal ? "refused" : "other error";
+        }
+        [completion, conversions].join(";")
+        "#,
+    ))?;
+    assert_eq!(observed.as_string(), Some(js_string!("refused;0")));
+    *fixture.presence_refusal.borrow_mut() = None;
+    let value = context.eval(Source::from_bytes("mutableHost.probe"))?;
+    assert_eq!(value.as_string(), Some(js_string!("assigned")));
+    Ok(())
+}
+
+#[test]
+fn mutable_named_override_support_is_checked_before_removing_own_shadow() -> JsResult<()> {
+    let mut context = Context::default();
+    let fixture = register_mutable_named(&mut context, &["fixed"])?;
+    context.eval(Source::from_bytes(
+        r#"Object.defineProperty(mutableHost, "fixed", {value: "ordinary", configurable: true});"#,
+    ))?;
+    *fixture.presence_refusal.borrow_mut() = Some((js_string!("fixed"), 0));
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        let completion;
+        try {
+            completion = Reflect.deleteProperty(mutableHost, "fixed");
+        } catch (error) {
+            completion = error === nativeRefusal ? "refused" : "other error";
+        }
+        completion
+        "#,
+    ))?;
+    assert_eq!(observed.as_string(), Some(js_string!("refused")));
+    *fixture.presence_refusal.borrow_mut() = None;
+    let value = context.eval(Source::from_bytes("mutableHost.fixed"))?;
+    assert_eq!(value.as_string(), Some(js_string!("ordinary")));
+    assert!(fixture.deletions.borrow().is_empty());
+    Ok(())
+}
+
+#[test]
+fn mutable_named_override_support_is_checked_before_returning_own_shadow() -> JsResult<()> {
+    let mut context = Context::default();
+    let fixture = register_mutable_named(&mut context, &["fixed"])?;
+    let before = context.eval(Source::from_bytes(
+        r#"
+        Object.defineProperty(mutableHost, "fixed", {value: "ordinary", configurable: true});
+        Object.getOwnPropertyDescriptor(mutableHost, "fixed").value
+        "#,
+    ))?;
+    assert_eq!(before.as_string(), Some(js_string!("ordinary")));
+    *fixture.presence_refusal.borrow_mut() = Some((js_string!("fixed"), 0));
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        let descriptorResult;
+        try {
+            descriptorResult = Reflect.getOwnPropertyDescriptor(mutableHost, "fixed").value;
+        } catch (error) {
+            descriptorResult = error === nativeRefusal ? "refused" : "other error";
+        }
+        descriptorResult
+        "#,
+    ))?;
+    assert_eq!(observed.as_string(), Some(js_string!("refused")));
     Ok(())
 }
 

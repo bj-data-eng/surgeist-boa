@@ -2,7 +2,10 @@
 
 mod named_override;
 mod window;
-pub use named_override::{NamedOverrideProperties, named_override, named_override_source};
+pub use named_override::{
+    MutableNamedOverrideProperties, NamedOverrideProperties, mutable_named_override,
+    named_override, named_override_source,
+};
 pub(crate) use window::is_window_proxy;
 pub use window::{WindowOrigin, install_window_index_reader, window_proxy, window_proxy_origin};
 

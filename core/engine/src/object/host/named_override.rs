@@ -17,7 +17,7 @@ use crate::{
     property::{PropertyDescriptor, PropertyKey},
 };
 
-/// Source of enumerable, read-only names for a named-only Web IDL platform object.
+/// Source of enumerable names for a named-only Web IDL platform object.
 ///
 /// The callbacks receive the actual holder. Numeric property names are passed
 /// as strings, and ordinary own properties hide supported names.
@@ -47,17 +47,52 @@ pub trait NamedOverrideProperties: Trace + 'static {
     }
 }
 
-/// Creates a named-only, enumerable Web IDL object with `LegacyOverrideBuiltIns`.
+/// Adds a named setter and a named deleter that returns `undefined` in Web IDL.
+///
+/// Both callbacks receive the actual holder. The setter receives the original
+/// JavaScript value and owns its interface-specific IDL conversion.
+pub trait MutableNamedOverrideProperties: NamedOverrideProperties {
+    /// Sets a new or existing named value.
+    fn set_named_value(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        value: &JsValue,
+        context: &mut Context,
+    ) -> JsResult<()>;
+
+    /// Deletes a visible supported name.
+    fn delete_named_value(
+        &self,
+        holder: &JsObject,
+        name: &JsString,
+        context: &mut Context,
+    ) -> JsResult<()>;
+}
+
+/// Creates a read-only, named-only Web IDL object with `LegacyOverrideBuiltIns`.
 #[must_use]
 pub fn named_override<T: NamedOverrideProperties>(
     root_shape: &RootShape,
     prototype: JsPrototype,
     data: T,
 ) -> JsObject {
-    let object =
-        JsObject::from_proto_and_data_in(root_shape, prototype, NamedOverride(Gc::new(data)));
-    object.borrow_mut().properties.preserve_string_key_order();
-    object
+    NamedOverride::allocate(root_shape, prototype, data, None)
+}
+
+/// Creates a mutable, named-only Web IDL object with `LegacyOverrideBuiltIns`.
+#[must_use]
+pub fn mutable_named_override<T: MutableNamedOverrideProperties>(
+    root_shape: &RootShape,
+    prototype: JsPrototype,
+    data: T,
+) -> JsObject {
+    NamedOverride::allocate(
+        root_shape,
+        prototype,
+        data,
+        Some(&NamedOverride::<T>::MUTATIONS),
+    )
 }
 
 /// Returns this object's named source if it carries the requested native data.
@@ -65,35 +100,96 @@ pub fn named_override<T: NamedOverrideProperties>(
 pub fn named_override_source<T: NamedOverrideProperties>(object: &JsObject) -> Option<Gc<T>> {
     object
         .downcast_ref::<NamedOverride<T>>()
-        .map(|data| Gc::clone(&data.0))
+        .map(|data| Gc::clone(&data.source))
+}
+
+type NamedSetter<T> = fn(&T, &JsObject, &JsString, &JsValue, &mut Context) -> JsResult<()>;
+type NamedDeleter<T> = fn(&T, &JsObject, &JsString, &mut Context) -> JsResult<()>;
+
+struct NamedMutations<T> {
+    set: NamedSetter<T>,
+    delete: NamedDeleter<T>,
+}
+
+impl<T: NamedOverrideProperties> NamedMutations<T> {
+    fn invoke_named_setter(
+        &self,
+        source: &T,
+        holder: &JsObject,
+        name: &JsString,
+        value: &JsValue,
+        context: &mut Context,
+    ) -> JsResult<bool> {
+        // InvokeNamedSetter determines support before converting the value.
+        source.named_present(holder, name, context)?;
+        (self.set)(source, holder, name, value, context)?;
+        Ok(true)
+    }
 }
 
 #[derive(Trace, Finalize)]
-struct NamedOverride<T: NamedOverrideProperties>(Gc<T>);
+struct NamedOverride<T: NamedOverrideProperties> {
+    source: Gc<T>,
+    mutations: Option<&'static NamedMutations<T>>,
+}
 
 impl<T: NamedOverrideProperties> JsData for NamedOverride<T> {
     fn internal_methods(&self) -> &'static InternalObjectMethods {
-        &Self::METHODS
+        if self.mutations.is_some() {
+            &Self::MUTABLE_METHODS
+        } else {
+            &Self::METHODS
+        }
     }
+}
+
+impl<T: MutableNamedOverrideProperties> NamedOverride<T> {
+    const MUTATIONS: NamedMutations<T> = NamedMutations {
+        set: T::set_named_value,
+        delete: T::delete_named_value,
+    };
 }
 
 impl<T: NamedOverrideProperties> NamedOverride<T> {
     const METHODS: InternalObjectMethods = InternalObjectMethods {
-        __get_own_property__: Self::get_own_property,
+        __get_own_property__: Self::get_own_property::<false>,
         named_descriptor_has_effects: true,
         __define_own_property__: Self::define_own_property,
         __set__: Self::set,
-        __delete__: Self::delete,
+        __delete__: Self::delete::<false>,
         __own_property_keys__: Self::own_property_keys,
         __prevent_extensions__: |_, _| Ok(false),
         ..ORDINARY_INTERNAL_METHODS
     };
 
-    fn source(object: &JsObject) -> JsResult<Gc<T>> {
-        named_override_source(object).ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("Expected a native named object")
-                .into()
+    const MUTABLE_METHODS: InternalObjectMethods = InternalObjectMethods {
+        __get_own_property__: Self::get_own_property::<true>,
+        __delete__: Self::delete::<true>,
+        ..Self::METHODS
+    };
+
+    fn allocate(
+        root_shape: &RootShape,
+        prototype: JsPrototype,
+        source: T,
+        mutations: Option<&'static NamedMutations<T>>,
+    ) -> JsObject {
+        let data = Self {
+            source: Gc::new(source),
+            mutations,
+        };
+        let object = JsObject::from_proto_and_data_in(root_shape, prototype, data);
+        object.borrow_mut().properties.preserve_string_key_order();
+        object
+    }
+
+    fn data(object: &JsObject) -> JsResult<Self> {
+        let data = object
+            .downcast_ref::<Self>()
+            .ok_or_else(|| JsNativeError::typ().with_message("Expected a native named object"))?;
+        Ok(Self {
+            source: Gc::clone(&data.source),
+            mutations: data.mutations,
         })
     }
 
@@ -105,7 +201,7 @@ impl<T: NamedOverrideProperties> NamedOverride<T> {
         }
     }
 
-    fn get_own_property(
+    fn get_own_property<const MUTABLE: bool>(
         object: &JsObject,
         key: &PropertyKey,
         context: &mut InternalMethodPropertyContext<'_>,
@@ -116,18 +212,29 @@ impl<T: NamedOverrideProperties> NamedOverride<T> {
             .slot()
             .attributes
             .insert(SlotAttributes::NOT_CACHEABLE);
-        let ordinary = ordinary_get_own_property(object, key, context)?;
-        if ordinary.is_some() {
-            return Ok(ordinary);
+        if !MUTABLE {
+            let ordinary = ordinary_get_own_property(object, key, context)?;
+            if ordinary.is_some() || matches!(key, PropertyKey::Symbol(_)) {
+                return Ok(ordinary);
+            }
         }
         let Some(name) = Self::name(key) else {
-            return Ok(None);
+            return ordinary_get_own_property(object, key, context);
         };
-        if let Some(value) = Self::source(object)?.named_value(object, &name, context)? {
+        let data = Self::data(object)?;
+        if MUTABLE {
+            // Check support before observing the current ordinary descriptor.
+            let present = data.source.named_present(object, &name, context)?;
+            let ordinary = ordinary_get_own_property(object, key, context)?;
+            if !present || ordinary.is_some() {
+                return Ok(ordinary);
+            }
+        }
+        if let Some(value) = data.source.named_value(object, &name, context)? {
             return Ok(Some(
                 PropertyDescriptor::builder()
                     .value(value)
-                    .writable(false)
+                    .writable(MUTABLE)
                     .enumerable(true)
                     .configurable(true)
                     .build(),
@@ -143,11 +250,26 @@ impl<T: NamedOverrideProperties> NamedOverride<T> {
         receiver: JsValue,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool> {
-        if matches!(key, PropertyKey::Symbol(_)) {
-            return ordinary_set(object, key, value, receiver, context);
+        if receiver
+            .as_object()
+            .is_some_and(|receiver| &receiver == object)
+            && let Some(name) = Self::name(&key)
+        {
+            let data = Self::data(object)?;
+            if let Some(mutations) = data.mutations {
+                context
+                    .slot()
+                    .attributes
+                    .insert(SlotAttributes::NOT_CACHEABLE);
+                return mutations.invoke_named_setter(&data.source, object, &name, &value, context);
+            }
         }
-        let own = ordinary_get_own_property(object, &key, context)?;
-        let result = ordinary_set_with_own_descriptor(object, key, value, receiver, own, context);
+        let result = if matches!(key, PropertyKey::Symbol(_)) {
+            ordinary_set(object, key, value, receiver, context)
+        } else {
+            let own = ordinary_get_own_property(object, &key, context)?;
+            ordinary_set_with_own_descriptor(object, key, value, receiver, own, context)
+        };
         // The native name can become supported without changing the object's
         // shape. A cached slot write would bypass DefineOwnProperty.
         context
@@ -163,43 +285,67 @@ impl<T: NamedOverrideProperties> NamedOverride<T> {
         descriptor: PropertyDescriptor,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool> {
+        context
+            .slot()
+            .attributes
+            .insert(SlotAttributes::NOT_CACHEABLE);
         let Some(name) = Self::name(key) else {
             return ordinary_define_own_property(object, key, descriptor, context);
         };
-        let source = Self::source(object)?;
-        if !source.is_unforgeable_name(&name) && source.named_present(object, &name, context)? {
-            return Ok(false);
+        let data = Self::data(object)?;
+        if !data.source.is_unforgeable_name(&name) {
+            let present = data.source.named_present(object, &name, context)?;
+            if let Some(mutations) = data.mutations {
+                if !descriptor.is_data_descriptor() {
+                    return Ok(false);
+                }
+                let undefined = JsValue::undefined();
+                let value = descriptor.value().unwrap_or(&undefined);
+                return mutations.invoke_named_setter(&data.source, object, &name, value, context);
+            }
+            if present {
+                return Ok(false);
+            }
         }
         let current = ordinary_get_own_property(object, key, context)?;
         let extensible = object.__is_extensible__(context)?;
-        let result = validate_and_apply_property_descriptor(
+        Ok(validate_and_apply_property_descriptor(
             Some((object, key)),
             extensible,
             descriptor,
             current,
             context.slot(),
-        );
-        context
-            .slot()
-            .attributes
-            .insert(SlotAttributes::NOT_CACHEABLE);
-        Ok(result)
+        ))
     }
 
-    fn delete(
+    fn delete<const MUTABLE: bool>(
         object: &JsObject,
         key: &PropertyKey,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool> {
+        context
+            .slot()
+            .attributes
+            .insert(SlotAttributes::NOT_CACHEABLE);
         let Some(name) = Self::name(key) else {
             return ordinary_delete(object, key, context);
         };
-        let mut current = ordinary_get_own_property(object, key, context)?;
+        let mut current = if MUTABLE {
+            // Visibility checks support before consulting an ordinary shadow.
+            None
+        } else {
+            ordinary_get_own_property(object, key, context)?
+        };
         if current.is_none() {
-            let present = Self::source(object)?.named_present(object, &name, context)?;
+            let data = Self::data(object)?;
+            let present = data.source.named_present(object, &name, context)?;
             current = ordinary_get_own_property(object, key, context)?;
             if present && current.is_none() {
-                return Ok(false);
+                let Some(mutations) = data.mutations else {
+                    return Ok(false);
+                };
+                (mutations.delete)(&data.source, object, &name, context)?;
+                return Ok(true);
             }
         }
         if let Some(descriptor) = current {
@@ -212,7 +358,7 @@ impl<T: NamedOverrideProperties> NamedOverride<T> {
     }
 
     fn own_property_keys(object: &JsObject, context: &mut Context) -> JsResult<Vec<PropertyKey>> {
-        let names = Self::source(object)?.named_keys(object, context)?;
+        let names = Self::data(object)?.source.named_keys(object, context)?;
         let ordinary = ordinary_own_property_keys(object, context)?;
         let too_many_keys = || JsNativeError::range().with_message("Too many named properties");
         let capacity = names
