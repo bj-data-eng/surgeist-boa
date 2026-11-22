@@ -20,7 +20,7 @@ use crate::{
     property::{PropertyDescriptor, PropertyKey},
     value::PreferredType,
 };
-use boa_gc::{self, Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
+use boa_gc::{self, Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace, WeakGc};
 use core::ptr::fn_addr_eq;
 use std::collections::HashSet;
 use std::{
@@ -83,7 +83,35 @@ pub(crate) struct VTableObject<T: NativeObject + ?Sized> {
     object: GcRefCell<Object<T>>,
 }
 
+/// A weak reference to an object that does not keep it alive.
+#[derive(Clone, Trace, Finalize)]
+pub struct WeakJsObject {
+    inner: WeakGc<ErasedVTableObject>,
+}
+
+impl Debug for WeakJsObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WeakJsObject").finish_non_exhaustive()
+    }
+}
+
+impl WeakJsObject {
+    /// Returns a strong reference while the object is live.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<JsObject> {
+        self.inner.upgrade().map(|inner| JsObject { inner })
+    }
+}
+
 impl JsObject {
+    /// Returns a weak reference that does not keep this object alive.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakJsObject {
+        WeakJsObject {
+            inner: WeakGc::new(&self.inner),
+        }
+    }
+
     /// Converts the `JsObject` into a raw pointer to its inner `GcBox<ErasedVTableObject>`.
     #[cfg(not(feature = "jsvalue-enum"))]
     pub(crate) fn into_raw(self) -> NonNull<GcBox<ErasedVTableObject>> {

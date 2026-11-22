@@ -10,7 +10,7 @@ use crate::{
     context::intrinsics::{StandardConstructor, StandardConstructors},
     error::JsNativeError,
     native_function::NativeFunctionObject,
-    object::{CONSTRUCTOR, JsObject, PROTOTYPE, PrivateElement, PrivateName},
+    object::{CONSTRUCTOR, JsObject, JsPrototype, PROTOTYPE, PrivateElement, PrivateName},
     property::{PropertyDescriptor, PropertyDescriptorBuilder, PropertyKey, PropertyNameKind},
     realm::Realm,
     string::StaticJsStrings,
@@ -53,6 +53,43 @@ impl IntegrityLevel {
 }
 
 impl JsObject {
+    /// Reads an own descriptor through this object's `[[GetOwnProperty]]` method.
+    pub fn own_descriptor(
+        &self,
+        key: &PropertyKey,
+        context: &mut Context,
+    ) -> JsResult<Option<PropertyDescriptor>> {
+        self.__get_own_property__(key, &mut context.into())
+    }
+
+    /// Defines an own property through this object's `[[DefineOwnProperty]]` method.
+    ///
+    /// Returns false when the object refuses the definition.
+    pub fn define_own_property(
+        &self,
+        key: &PropertyKey,
+        descriptor: PropertyDescriptor,
+        context: &mut Context,
+    ) -> JsResult<bool> {
+        self.__define_own_property__(key, descriptor, &mut context.into())
+    }
+
+    /// Reads the prototype through this object's `[[GetPrototypeOf]]` method.
+    pub fn internal_prototype(&self, context: &mut Context) -> JsResult<JsPrototype> {
+        self.__get_prototype_of__(context)
+    }
+
+    /// Changes the prototype through this object's `[[SetPrototypeOf]]` method.
+    ///
+    /// Returns false when the object refuses the change.
+    pub fn set_internal_prototype(
+        &self,
+        prototype: JsPrototype,
+        context: &mut Context,
+    ) -> JsResult<bool> {
+        self.__set_prototype_of__(prototype, context)
+    }
+
     /// Check if object is extensible.
     ///
     /// More information:
@@ -852,6 +889,20 @@ impl JsObject {
 
         // 4. Return false.
         Ok(false)
+    }
+
+    /// Resolves the realm of a callable through ECMAScript `GetFunctionRealm`.
+    ///
+    /// Throws for non-callable objects and revoked callable proxies. As specified
+    /// by the abstract operation, a callable with no recorded realm uses the
+    /// context's current realm.
+    pub fn callable_realm(&self, context: &mut Context) -> JsResult<Realm> {
+        if !self.is_callable() {
+            return Err(JsNativeError::typ()
+                .with_message("Expected a callable object")
+                .into());
+        }
+        self.get_function_realm(context)
     }
 
     /// Abstract operation [`GetFunctionRealm`][spec].

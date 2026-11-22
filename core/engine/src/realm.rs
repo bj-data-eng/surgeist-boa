@@ -22,7 +22,7 @@ use crate::{
 use boa_ast::scope::Scope;
 use boa_engine::JsValue;
 use boa_engine::property::{Attribute, PropertyDescriptor, PropertyKey};
-use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace};
+use boa_gc::{Finalize, Gc, GcRef, GcRefCell, GcRefMut, Trace, WeakGc};
 use rustc_hash::FxHashMap;
 
 /// Representation of a Realm.
@@ -74,7 +74,35 @@ struct Inner {
     host_defined: GcRefCell<HostDefined>,
 }
 
+/// A weak reference to a realm that does not keep its environments alive.
+#[derive(Clone, Trace, Finalize)]
+pub struct WeakRealm {
+    inner: WeakGc<Inner>,
+}
+
+impl std::fmt::Debug for WeakRealm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WeakRealm").finish_non_exhaustive()
+    }
+}
+
+impl WeakRealm {
+    /// Returns a strong reference while the realm is live.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<Realm> {
+        self.inner.upgrade().map(|inner| Realm { inner })
+    }
+}
+
 impl Realm {
+    /// Returns a weak reference that does not keep this realm alive.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakRealm {
+        WeakRealm {
+            inner: WeakGc::new(&self.inner),
+        }
+    }
+
     /// Create a new [`Realm`].
     #[inline]
     pub fn create(hooks: &dyn HostHooks, root_shape: &RootShape) -> JsResult<Self> {
