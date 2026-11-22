@@ -84,9 +84,32 @@ impl IntrinsicObject for Array {
             .name(js_string!("get [Symbol.species]"))
             .build();
 
+        let objects = realm.intrinsics().objects();
+        let entries_function = BuiltInBuilder::callable_with_object(
+            realm,
+            objects.array_prototype_entries().into(),
+            Self::entries,
+        )
+        .name(js_string!("entries"))
+        .build();
+        let keys_function = BuiltInBuilder::callable_with_object(
+            realm,
+            objects.array_prototype_keys().into(),
+            Self::keys,
+        )
+        .name(js_string!("keys"))
+        .build();
+        let for_each_function = BuiltInBuilder::callable_with_object(
+            realm,
+            objects.array_prototype_for_each().into(),
+            Self::for_each,
+        )
+        .name(js_string!("forEach"))
+        .length(1)
+        .build();
         let values_function = BuiltInBuilder::callable_with_object(
             realm,
-            realm.intrinsics().objects().array_prototype_values().into(),
+            objects.array_prototype_values().into(),
             Self::values,
         )
         .name(js_string!("values"))
@@ -94,11 +117,7 @@ impl IntrinsicObject for Array {
 
         let to_string_function = BuiltInBuilder::callable_with_object(
             realm,
-            realm
-                .intrinsics()
-                .objects()
-                .array_prototype_to_string()
-                .into(),
+            objects.array_prototype_to_string().into(),
             Self::to_string,
         )
         .name(js_string!("toString"))
@@ -125,7 +144,11 @@ impl IntrinsicObject for Array {
             .method(Self::at, js_string!("at"), 1)
             .method(Self::concat, js_string!("concat"), 1)
             .method(Self::copy_within, js_string!("copyWithin"), 2)
-            .method(Self::entries, js_string!("entries"), 0)
+            .property(
+                js_string!("entries"),
+                entries_function,
+                Attribute::WRITABLE | Attribute::NON_ENUMERABLE | Attribute::CONFIGURABLE,
+            )
             .method(Self::every, js_string!("every"), 1)
             .method(Self::fill, js_string!("fill"), 1)
             .method(Self::filter, js_string!("filter"), 1)
@@ -135,11 +158,19 @@ impl IntrinsicObject for Array {
             .method(Self::find_last_index, js_string!("findLastIndex"), 1)
             .method(Self::flat, js_string!("flat"), 0)
             .method(Self::flat_map, js_string!("flatMap"), 1)
-            .method(Self::for_each, js_string!("forEach"), 1)
+            .property(
+                js_string!("forEach"),
+                for_each_function,
+                Attribute::WRITABLE | Attribute::NON_ENUMERABLE | Attribute::CONFIGURABLE,
+            )
             .method(Self::includes_value, js_string!("includes"), 1)
             .method(Self::index_of, js_string!("indexOf"), 1)
             .method(Self::join, js_string!("join"), 1)
-            .method(Self::keys, js_string!("keys"), 0)
+            .property(
+                js_string!("keys"),
+                keys_function,
+                Attribute::WRITABLE | Attribute::NON_ENUMERABLE | Attribute::CONFIGURABLE,
+            )
             .method(Self::last_index_of, js_string!("lastIndexOf"), 1)
             .method(Self::map, js_string!("map"), 1)
             .method(Self::pop, js_string!("pop"), 0)

@@ -74,6 +74,59 @@ fn register_collection(context: &mut Context, names: Vec<JsString>) -> Collectio
 }
 
 #[test]
+fn value_iterable_intrinsics_are_original_and_realm_specific() -> JsResult<()> {
+    fn observe_realm(context: &mut Context) -> JsResult<[JsValue; 4]> {
+        let names = ["entries", "keys", "forEach", "values"];
+        let originals = context
+            .eval(Source::from_bytes(
+                r"
+                const originalArrayMethods = Array.prototype;
+                const descriptors = Object.getOwnPropertyDescriptors(originalArrayMethods);
+                for (const [name, length] of [['entries', 0], ['keys', 0], ['forEach', 1], ['values', 0]]) {
+                    const {value, writable, enumerable, configurable} = descriptors[name];
+                    if (value.name !== name || value.length !== length || !writable || enumerable || !configurable)
+                        throw new Error('unexpected Array method: ' + name);
+                    Object.defineProperty(originalArrayMethods, name, {
+                        get() { throw new Error('guest Array getter ran'); }
+                    });
+                }
+                globalThis.Array = null;
+                Object.fromEntries(Object.entries(descriptors).map(([name, desc]) => [name, desc.value]));
+                ",
+            ))?
+            .as_object()
+            .expect("the witness returns its saved original functions");
+        let intrinsics = context.intrinsics().objects();
+        let recorded: [JsValue; 4] = [
+            intrinsics.array_prototype_entries().into(),
+            intrinsics.array_prototype_keys().into(),
+            intrinsics.array_prototype_for_each().into(),
+            intrinsics.array_prototype_values().into(),
+        ];
+        for (name, actual) in names.into_iter().zip(&recorded) {
+            assert!(
+                originals
+                    .get(JsString::from(name), context)?
+                    .strict_equals(actual),
+                "{name}"
+            );
+        }
+        Ok(recorded)
+    }
+
+    let mut context = Context::default();
+    let first = observe_realm(&mut context)?;
+    let other = context.create_realm()?;
+    let initial = context.enter_realm(other);
+    let second = observe_realm(&mut context)?;
+    context.enter_realm(initial);
+    for (left, right) in first.iter().zip(&second) {
+        assert!(!left.strict_equals(right));
+    }
+    Ok(())
+}
+
+#[test]
 fn named_collection_assignment_uses_ordinary_receivers() {
     let mut context = Context::default();
     let source = register_collection(&mut context, vec![js_string!("named")]);
