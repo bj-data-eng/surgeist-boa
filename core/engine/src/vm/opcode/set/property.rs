@@ -58,6 +58,7 @@ fn set_by_name(
         }
         return Ok(());
     }
+    let shape = object_borrowed.shape().clone();
     drop(object_borrowed);
 
     let name: PropertyKey = ic.name.clone().into();
@@ -70,13 +71,10 @@ fn set_by_name(
             .into());
     }
 
-    // Cache the property.
     let slot = *context.slot();
     if succeeded && slot.is_cacheable() {
         let ic = &context.vm.frame().code_block.ic[usize::from(index)];
-        let object_borrowed = object.borrow();
-        let shape = object_borrowed.shape();
-        ic.set(shape, slot);
+        ic.set_after_access(&shape, object.borrow().shape(), slot);
     }
 
     Ok(())
