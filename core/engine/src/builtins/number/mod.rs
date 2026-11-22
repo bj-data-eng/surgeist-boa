@@ -949,15 +949,50 @@ fn f64_to_exponential(n: f64) -> JsString {
     }
 }
 
-/// Helper function that formats a float as a ES6-style exponential number string with a given precision.
-// We can't use the same approach as in `f64_to_exponential`
-// because in cases like (0.999).toExponential(0) the result will be 1e0.
-// Instead we get the index of 'e', and if the next character is not '-' we insert the plus sign
+/// Formats a finite float as an ECMAScript exponential string with the given precision.
 fn f64_to_exponential_with_precision(n: f64, prec: usize) -> JsString {
     let mut res = format!("{n:.prec$e}");
     let idx = res.find('e').expect("'e' not found in exponential string");
+
+    // Rust rounds ties to even. ECMAScript chooses the larger magnitude.
+    // A carry into a higher exponent already rounds up and puts the input within
+    // one twentieth of the new quantum of the power of ten, away from its midpoint.
+    if let Ok(exponent) = res[idx + 1..].parse::<i32>()
+        && rounds_down_at_decimal_midpoint(n, exponent - prec as i32)
+    {
+        // The lower neighbor ends in an even digit, so incrementing it cannot carry.
+        let digit = char::from(res.as_bytes()[idx - 1] + 1);
+        res.replace_range(idx - 1..idx, digit.encode_utf8(&mut [0; 1]));
+    }
+
     if res.as_bytes()[idx + 1] != b'-' {
         res.insert(idx + 1, '+');
     }
     js_string!(res)
+}
+
+/// Tests whether nearest-even rounding chooses the lower magnitude at a decimal midpoint.
+fn rounds_down_at_decimal_midpoint(n: f64, decimal_power: i32) -> bool {
+    let (significand, exponent, _) = FloatCore::integer_decode(n);
+    if significand == 0 {
+        return false;
+    }
+
+    // After scaling the odd significand by 2^binary_power / 10^decimal_power,
+    // a midpoint has exactly one factor of 2 and no factors of 5 in its denominator.
+    let twos = significand.trailing_zeros();
+    let binary_power = i32::from(exponent) + twos as i32;
+    if binary_power != decimal_power - 1 {
+        return false;
+    }
+    let odd_significand = significand >> twos;
+    let Some(fives) = 5_u64.checked_pow(decimal_power.max(0) as u32) else {
+        // A power of five greater than u64::MAX cannot divide the significand.
+        return false;
+    };
+
+    // The lower neighbor of an odd integer divided by 2 is even when that integer
+    // is 1 modulo 4. Multiplication or exact division by a power of five preserves
+    // this residue because every power of five is 1 modulo 4.
+    odd_significand % 4 == 1 && odd_significand.is_multiple_of(fives)
 }
