@@ -4,9 +4,10 @@ use crate::value::JsVariant;
 use crate::vm::opcode::{IndexOperand, RegisterOperand};
 use crate::{
     Context, JsNativeError, JsResult,
-    builtins::function::set_function_name,
+    builtins::{function::set_function_name, proxy::Proxy},
     object::{internal_methods::InternalMethodPropertyContext, shape::slot::SlotAttributes},
     property::{PropertyDescriptor, PropertyKey},
+    string::StaticJsStrings,
     vm::opcode::Operation,
 };
 use boa_macros::js_str;
@@ -24,8 +25,14 @@ fn set_by_name(
 
     let ic = &context.vm.frame().code_block().ic[usize::from(index)];
 
+    // Array length writes must reach ArraySetLength. A Proxy can forward the
+    // write, and an alternate receiver can be an array even if the lookup is ordinary.
+    let cacheable = ic.name != StaticJsStrings::LENGTH
+        || (!object.is_array()
+            && !object.is::<Proxy>()
+            && receiver.as_object().as_ref() == Some(&object));
     let object_borrowed = object.borrow();
-    if let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
+    if cacheable && let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
         let slot_index = slot.index as usize;
 
         if slot.attributes.is_accessor_descriptor() {
@@ -58,7 +65,7 @@ fn set_by_name(
         }
         return Ok(());
     }
-    let shape = object_borrowed.shape().clone();
+    let shape = cacheable.then(|| object_borrowed.shape().clone());
     drop(object_borrowed);
 
     let name: PropertyKey = ic.name.clone().into();
@@ -72,7 +79,10 @@ fn set_by_name(
     }
 
     let slot = *context.slot();
-    if succeeded && slot.is_cacheable() {
+    if succeeded
+        && slot.is_cacheable()
+        && let Some(shape) = shape
+    {
         let ic = &context.vm.frame().code_block.ic[usize::from(index)];
         ic.set_after_access(&shape, object.borrow().shape(), slot);
     }

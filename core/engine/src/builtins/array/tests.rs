@@ -985,3 +985,106 @@ fn array_prototype_find_edge_cases() {
         "#}),
     ]);
 }
+
+#[test]
+fn named_length_writes_truncate_each_array() {
+    run_test_actions([TestAction::assert(indoc! {r#"
+        (() => {
+            function resize(object, length) { object.length = length; }
+            const first = [1, 2, 3];
+            const second = [1, 2, 3];
+            resize(first, 0);
+            resize(second, 0);
+            const ordinary = { length: 3, 0: "kept" };
+            resize(ordinary, "plain");
+            return [first, second].every(array =>
+                array.length === 0 && Reflect.ownKeys(array).join() === "length"
+            ) && ordinary.length === "plain" && ordinary[0] === "kept";
+        })()
+    "#})]);
+}
+
+#[test]
+fn named_length_writes_keep_resize_errors_and_partial_truncation() {
+    run_test_actions([TestAction::assert(indoc! {r#"
+        (() => {
+            "use strict";
+            function resize(object, length) { object.length = length; }
+            resize([1, 2, 3], 0);
+
+            const invalid = [1, 2, 3];
+            let invalidLength = false;
+            try { resize(invalid, 1.5); }
+            catch (error) { invalidLength = error instanceof RangeError; }
+
+            const blocked = [1, 2, 3];
+            Object.defineProperty(blocked, "1", { configurable: false });
+            let blockedIndex = false;
+            try { resize(blocked, 0); }
+            catch (error) { blockedIndex = error instanceof TypeError; }
+
+            const locked = [1, 2, 3];
+            Object.defineProperty(locked, "length", { writable: false });
+            let lockedLength = false;
+            try { resize(locked, 0); }
+            catch (error) { lockedLength = error instanceof TypeError; }
+
+            return invalidLength && invalid.length === 3 && invalid[2] === 3
+                && blockedIndex && blocked.length === 2 && blocked[1] === 2 && !(2 in blocked)
+                && lockedLength && locked.length === 3 && locked[2] === 3;
+        })()
+    "#})]);
+}
+
+#[test]
+fn named_length_writes_use_array_receiver_after_ordinary_super_assignment() {
+    run_test_actions([TestAction::assert(indoc! {r#"
+        (() => {
+            const base = { length: 10 };
+            const holder = {
+                __proto__: base,
+                resize(length) { super.length = length; }
+            };
+            holder.resize.call(base, 7);
+
+            const receiver = [1, 2, 3];
+            holder.resize.call(receiver, 0);
+            const wrapped = [4, 5, 6];
+            holder.resize.call(new Proxy(wrapped, {}), 0);
+            return base.length === 7 && [receiver, wrapped].every(array =>
+                array.length === 0 && !(0 in array)
+            );
+        })()
+    "#})]);
+}
+
+#[test]
+fn named_length_writes_call_proxy_set_after_ordinary_accessor() {
+    run_test_actions([TestAction::assert(indoc! {r#"
+        (() => {
+            let ordinaryCalls = 0;
+            let proxyCalls = 0;
+            const ordinary = {};
+            const array = [1, 2, 3];
+            const proxy = new Proxy(array, {
+                set(target, key, value, receiver) {
+                    proxyCalls++;
+                    return Reflect.set(target, key, value, receiver);
+                }
+            });
+            Object.defineProperty(Object.prototype, "length", {
+                set() { ordinaryCalls++; },
+                configurable: true
+            });
+            try {
+                function resize(object) { object.length = 0; }
+                resize(ordinary);
+                resize(proxy);
+                return ordinaryCalls === 1 && proxyCalls === 1
+                    && array.length === 0 && !(0 in array);
+            } finally {
+                delete Object.prototype.length;
+            }
+        })()
+    "#})]);
+}
