@@ -323,3 +323,56 @@ fn named_key_removed_before_visibility_skips_the_later_probe() -> JsResult<()> {
     );
     Ok(())
 }
+
+#[test]
+fn named_collection_rechecks_values_after_prototype_reentry() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_collection(
+        &mut context,
+        ["nullable", "ordinary", "present", "deleted"]
+            .into_iter()
+            .map(JsString::from)
+            .collect(),
+    );
+    context.register_global_builtin_callable(
+        js_string!("forgetName"),
+        1,
+        NativeFunction::from_copy_closure_with_captures(
+            |_, args, names, _| {
+                if let Some(name) = args.first().and_then(JsValue::as_string) {
+                    names.borrow_mut().retain(|candidate| *candidate != name);
+                }
+                Ok(JsValue::undefined())
+            },
+            source.names.clone(),
+        ),
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                forgetName(key);
+                if (key === "nullable") return undefined;
+                Reflect.defineProperty(collection, key, {value: 7, configurable: true});
+                return {value: "mask", configurable: true};
+            }
+        }));
+        const blank = Reflect.getOwnPropertyDescriptor(collection, "nullable");
+        const ordinary = Reflect.getOwnPropertyDescriptor(collection, "ordinary");
+        const present = Reflect.has(collection, "present");
+        const deleted = Reflect.deleteProperty(collection, "deleted");
+        [
+            blank?.value === null && blank.configurable && !blank.enumerable && !blank.writable,
+            ordinary?.value === 7,
+            present,
+            deleted && !Object.hasOwn(collection, "deleted")
+        ].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("true;true;true;true")),
+        "the selected getter and ordinary fallbacks must read after the prototype callback",
+    );
+    Ok(())
+}
