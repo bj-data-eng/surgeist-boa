@@ -39,6 +39,50 @@ fn to_exponential() {
 }
 
 #[test]
+fn to_exponential_rounds_exact_ties_to_larger_magnitude() {
+    run_test_actions([
+        TestAction::assert_eq("(25).toExponential(0)", js_str!("3e+1")),
+        TestAction::assert_eq("(12345).toExponential(3)", js_str!("1.235e+4")),
+        TestAction::assert_eq("(2.5).toExponential(0)", js_str!("3e+0")),
+        TestAction::assert_eq("(-0.125).toExponential(1)", js_str!("-1.3e-1")),
+        // 2^-145 = (5^144 / 2) * 10^-144.
+        TestAction::assert_eq(
+            "(2.2420775429197073e-44).toExponential(100)",
+            js_str!(
+                "2.2420775429197073134779673332638658100484191070024252348113092542236657322973769623786211013793945313e-44"
+            ),
+        ),
+    ]);
+}
+
+#[test]
+fn to_exponential_rounds_near_ties_and_carries_into_the_exponent() {
+    run_test_actions([
+        TestAction::assert_eq("(1.2499999999999998).toExponential(1)", js_str!("1.2e+0")),
+        TestAction::assert_eq("(1.2500000000000002).toExponential(1)", js_str!("1.3e+0")),
+        TestAction::assert_eq("(21).toExponential(0)", js_str!("2e+1")),
+        TestAction::assert_eq("(3.5).toExponential(0)", js_str!("4e+0")),
+        TestAction::assert_eq("(9.5).toExponential(0)", js_str!("1e+1")),
+        TestAction::assert_eq("(0.9999).toExponential(2)", js_str!("1.00e+0")),
+        TestAction::assert_eq("Number.MIN_VALUE.toExponential(3)", js_str!("4.941e-324")),
+        TestAction::assert_eq("Number.MAX_VALUE.toExponential(3)", js_str!("1.798e+308")),
+    ]);
+}
+
+#[test]
+fn to_exponential_preserves_sign_and_precision_rules() {
+    const ERROR: &str = "toExponential() argument must be between 0 and 100";
+    run_test_actions([
+        TestAction::assert_eq("(-0).toExponential(2)", js_str!("0.00e+0")),
+        TestAction::assert_eq("(1.25).toExponential(undefined)", js_str!("1.25e+0")),
+        TestAction::assert_eq("Infinity.toExponential(101)", js_str!("Infinity")),
+        TestAction::assert_eq("NaN.toExponential(-1)", js_str!("NaN")),
+        TestAction::assert_native_error("(1).toExponential(-1)", JsNativeErrorKind::Range, ERROR),
+        TestAction::assert_native_error("(1).toExponential(101)", JsNativeErrorKind::Range, ERROR),
+    ]);
+}
+
+#[test]
 fn to_fixed() {
     run_test_actions([
         TestAction::assert_eq("Number().toFixed()", js_str!("0")),
