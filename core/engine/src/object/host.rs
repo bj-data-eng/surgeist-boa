@@ -4,7 +4,7 @@ mod window;
 pub(crate) use window::is_window_proxy;
 pub use window::{WindowOrigin, install_window_index_reader, window_proxy, window_proxy_origin};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, hash_map::Entry};
 
 use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 
@@ -566,7 +566,10 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
         keys.try_reserve(capacity)
             .map_err(|_| JsNativeError::range().with_message("Too many collection properties"))?;
         keys.extend(indices.iter().copied().map(PropertyKey::from));
-        let mut seen = HashSet::new();
+        let mut observed_names = HashMap::new();
+        observed_names
+            .try_reserve(names.len())
+            .map_err(|_| JsNativeError::range().with_message("Too many collection properties"))?;
         for name in names {
             let key = PropertyKey::from(name);
             // A numeric supported name belongs to the named group unless the
@@ -576,19 +579,23 @@ impl<T: IndexedProperties> ReadOnlyIndices<T> {
             {
                 continue;
             }
-            if Self::name_is_unmasked(object, &key, &mut None, context)? && seen.insert(key.clone())
-            {
+            let Entry::Vacant(observed) = observed_names.entry(key.clone()) else {
+                continue;
+            };
+            let visible = Self::name_is_unmasked(object, &key, &mut None, context)?;
+            observed.insert(visible);
+            if visible {
                 keys.push(key);
             }
         }
         let ordinary = ordinary_own_property_keys(object, context)?;
         keys.try_reserve(ordinary.len())
             .map_err(|_| JsNativeError::range().with_message("Too many collection properties"))?;
-        keys.extend(
-            ordinary
-                .into_iter()
-                .filter(|key| !matches!(key, PropertyKey::Index(_))),
-        );
+        // A visibility callback can add a real own property after its name
+        // was emitted. Keep its first position in the resulting key list.
+        keys.extend(ordinary.into_iter().filter(|key| {
+            !matches!(key, PropertyKey::Index(_)) && observed_names.get(key) != Some(&true)
+        }));
         Ok(keys)
     }
 }
