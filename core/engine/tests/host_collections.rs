@@ -2,7 +2,7 @@
 //! Property operations on native legacy collection objects.
 
 use boa_engine::{
-    Context, JsObject, JsResult, JsString, JsValue, Source, js_string,
+    Context, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
     object::host::{IndexedProperties, readonly_indexed},
     property::Attribute,
 };
@@ -215,6 +215,75 @@ fn numeric_collection_names_are_enumerated_after_indices_without_duplicates() ->
         keys.as_string(),
         Some(js_string!("0,before,99,01,4294967295")),
         "an out-of-range numeric name belongs to the named key group and an indexed collision appears once",
+    );
+    Ok(())
+}
+
+#[test]
+fn repeated_collection_name_checks_visibility_once() -> JsResult<()> {
+    let mut context = Context::default();
+    register_collection(
+        &mut context,
+        vec![js_string!("99"), js_string!("99"), js_string!("visible")],
+    );
+    let keys = context.eval(Source::from_bytes(
+        r#"
+        let seen = 0;
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                if (key === "99" && ++seen === 1) {
+                    return {value: "mask", configurable: true};
+                }
+                return undefined;
+            }
+        }));
+        [Reflect.ownKeys(collection).join(","), seen].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        keys.as_string(),
+        Some(js_string!("0,visible;1")),
+        "one supported name gets one visibility observation",
+    );
+    Ok(())
+}
+
+#[test]
+fn reentrant_collection_keys_keep_the_first_emission() -> JsResult<()> {
+    let mut context = Context::default();
+    let source = register_collection(&mut context, vec![js_string!("before"), js_string!("99")]);
+    context.register_global_builtin_callable(
+        js_string!("removeBefore"),
+        0,
+        NativeFunction::from_copy_closure_with_captures(
+            |_, _, names, _| {
+                names
+                    .borrow_mut()
+                    .retain(|name| *name != js_string!("before"));
+                Ok(JsValue::undefined())
+            },
+            source.names.clone(),
+        ),
+    )?;
+    let observed = context.eval(Source::from_bytes(
+        r#"
+        Object.setPrototypeOf(collection, new Proxy({}, {
+            getOwnPropertyDescriptor(_, key) {
+                if (key === "99") {
+                    removeBefore();
+                    Object.defineProperty(collection, "before", {value: 3, configurable: true});
+                    Object.defineProperty(collection, "later", {value: 4, configurable: true});
+                }
+                return undefined;
+            }
+        }));
+        [Reflect.ownKeys(collection).join(","), collection.before, collection.later].join(";")
+        "#,
+    ))?;
+    assert_eq!(
+        observed.as_string(),
+        Some(js_string!("0,before,99,later;3;4")),
+        "a key emitted during the named pass must occur once after reentry",
     );
     Ok(())
 }
