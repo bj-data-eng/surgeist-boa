@@ -1,8 +1,69 @@
 mod miri {
+    use std::cell::Cell;
+
     use boa_macros::{Finalize, Trace};
 
     use super::super::{Harness, run_test};
-    use crate::{Gc, GcBox, GcRefCell, force_collect};
+    use crate::{
+        Gc, GcBox, GcRefCell, HeapStatistics, WeakGc, force_collect, heap_statistics,
+        internals::EphemeronBox,
+    };
+
+    #[test]
+    fn heap_statistics_observe_shallow_boxes_without_collecting() {
+        run_test(|| {
+            assert_eq!(
+                heap_statistics(),
+                Some(HeapStatistics {
+                    bytes_allocated: 0,
+                    collections: 0,
+                })
+            );
+
+            let gc = Gc::new(vec![0_u8; 4096]);
+            let weak = WeakGc::new(&gc);
+            let bytes = size_of::<GcBox<Vec<u8>>>() + size_of::<EphemeronBox<Vec<u8>, ()>>();
+            let allocated = HeapStatistics {
+                bytes_allocated: bytes,
+                collections: 0,
+            };
+            assert_eq!(heap_statistics(), Some(allocated));
+            drop(weak);
+            drop(gc);
+            assert_eq!(heap_statistics(), Some(allocated));
+
+            force_collect();
+            assert_eq!(
+                heap_statistics(),
+                Some(HeapStatistics {
+                    bytes_allocated: 0,
+                    collections: 1,
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn heap_statistics_refuse_reentrant_collection_observation() {
+        thread_local!(static FINALIZED: Cell<bool> = const { Cell::new(false) });
+
+        #[derive(Trace)]
+        struct Observer;
+
+        impl crate::Finalize for Observer {
+            fn finalize(&self) {
+                assert_eq!(heap_statistics(), None);
+                FINALIZED.set(true);
+            }
+        }
+
+        run_test(|| {
+            drop(Gc::new(Observer));
+            force_collect();
+            assert!(FINALIZED.get());
+            assert_eq!(heap_statistics().map(|stats| stats.collections), Some(1));
+        });
+    }
 
     #[test]
     fn gc_basic_cell_allocation() {

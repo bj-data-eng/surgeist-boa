@@ -530,6 +530,37 @@ impl Collector {
     }
 }
 
+/// A point-in-time observation of the garbage collector on the current thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeapStatistics {
+    /// The collector's shallow allocation bytes for retained GC and ephemeron
+    /// boxes, including their inline bookkeeping and unreachable boxes awaiting
+    /// collection. This excludes allocator overhead, separate buffers owned by
+    /// box contents, and storage outside the collector's box accounting.
+    pub bytes_allocated: usize,
+    /// The number of collections performed by this thread's collector.
+    pub collections: usize,
+}
+
+/// Observes the current thread's collector without running a collection.
+///
+/// The sample covers all Boa contexts on the thread. It is not process memory
+/// or a memory limit. Returns `None` during a collection or when the thread's
+/// collector is unavailable.
+#[must_use]
+pub fn heap_statistics() -> Option<HeapStatistics> {
+    BOA_GC
+        .try_with(|current| {
+            let gc = current.try_borrow().ok()?;
+            Some(HeapStatistics {
+                bytes_allocated: gc.runtime.bytes_allocated,
+                collections: gc.runtime.collections,
+            })
+        })
+        .ok()
+        .flatten()
+}
+
 /// Forcefully runs a garbage collection of all inaccessible nodes.
 pub fn force_collect() {
     BOA_GC.with(|current| {
