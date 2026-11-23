@@ -49,6 +49,31 @@ thread_local! {
     static CANNOT_BLOCK_COUNTER: Cell<u64> = const { Cell::new(0) };
 }
 
+/// Reached VM opcode dispatches in this context since counting was enabled.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum InstructionCount {
+    /// The caller has not enabled instruction counting.
+    #[default]
+    Disabled,
+    /// Exact dispatches, including handlers that end abruptly.
+    Exact(u64),
+    /// The dispatch total exceeded the representation.
+    Overflowed,
+}
+
+impl InstructionCount {
+    #[inline]
+    pub(crate) fn record_dispatch(&mut self) {
+        if let Self::Exact(total) = self {
+            *self = match total.checked_add(1) {
+                Some(total) => Self::Exact(total),
+                None => Self::Overflowed,
+            };
+        }
+    }
+}
+
 /// ECMAScript context. It is the primary way to interact with the runtime.
 ///
 /// `Context`s constructed in a thread share the same runtime, therefore it
@@ -104,6 +129,7 @@ pub struct Context {
     pub(crate) instructions_remaining: usize,
 
     pub(crate) vm: Vm,
+    pub(crate) instruction_count: InstructionCount,
 
     pub(crate) kept_alive: Vec<JsObject>,
     pub(crate) active_named_properties: Vec<(JsObject, PropertyKey)>,
@@ -479,6 +505,20 @@ impl Context {
     #[must_use]
     pub fn intrinsics(&self) -> &Intrinsics {
         self.vm.frame().realm.intrinsics()
+    }
+
+    /// Begin recording opcode dispatches in this context. Subsequent calls
+    /// preserve the original interval and accumulated count.
+    pub fn enable_instruction_counting(&mut self) {
+        if self.instruction_count == InstructionCount::Disabled {
+            self.instruction_count = InstructionCount::Exact(0);
+        }
+    }
+
+    /// Observe the count without entering the VM or running queued jobs.
+    #[must_use]
+    pub const fn instruction_count(&self) -> InstructionCount {
+        self.instruction_count
     }
 
     /// Returns the amount of remaining instructions to be executed
@@ -1260,6 +1300,7 @@ impl ContextBuilder {
         let mut context = Context {
             interner: self.interner.unwrap_or_default(),
             vm,
+            instruction_count: InstructionCount::Disabled,
             strict: false,
             #[cfg(feature = "temporal")]
             timezone_provider: if let Some(provider) = self.timezone_provider {

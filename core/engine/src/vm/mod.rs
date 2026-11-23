@@ -47,6 +47,8 @@ mod call_frame;
 mod code_block;
 mod completion_record;
 mod inline_cache;
+#[cfg(test)]
+mod instruction_tests;
 mod runtime_limits;
 
 pub(crate) mod opcode;
@@ -792,6 +794,8 @@ impl Context {
             }
             self.instructions_remaining -= 1;
         }
+
+        self.instruction_count.record_dispatch();
 
         #[cfg(feature = "trace")]
         if self.vm.trace || self.vm.frame().code_block.traceable() {

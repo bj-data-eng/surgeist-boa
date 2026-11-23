@@ -16,7 +16,8 @@ mod miri {
                 heap_statistics(),
                 Some(HeapStatistics {
                     bytes_allocated: 0,
-                    collections: 0,
+                    collections: Some(0),
+                    cumulative_bytes_allocated: Some(0),
                 })
             );
 
@@ -25,7 +26,8 @@ mod miri {
             let bytes = size_of::<GcBox<Vec<u8>>>() + size_of::<EphemeronBox<Vec<u8>, ()>>();
             let allocated = HeapStatistics {
                 bytes_allocated: bytes,
-                collections: 0,
+                collections: Some(0),
+                cumulative_bytes_allocated: u64::try_from(bytes).ok(),
             };
             assert_eq!(heap_statistics(), Some(allocated));
             drop(weak);
@@ -37,7 +39,8 @@ mod miri {
                 heap_statistics(),
                 Some(HeapStatistics {
                     bytes_allocated: 0,
-                    collections: 1,
+                    collections: Some(1),
+                    cumulative_bytes_allocated: u64::try_from(bytes).ok(),
                 })
             );
         });
@@ -61,7 +64,79 @@ mod miri {
             drop(Gc::new(Observer));
             force_collect();
             assert!(FINALIZED.get());
-            assert_eq!(heap_statistics().map(|stats| stats.collections), Some(1));
+            assert_eq!(
+                heap_statistics().and_then(|stats| stats.collections),
+                Some(1)
+            );
+        });
+    }
+
+    #[test]
+    fn heap_statistics_separate_high_churn_from_retained_bytes() {
+        run_test(|| {
+            let fixed = Gc::new(17_u8);
+            let fixed_bytes = size_of::<GcBox<u8>>();
+            let temporary_bytes = size_of::<GcBox<[u8; 64]>>();
+            let mut total = fixed_bytes;
+            for collections in 1_u64..=3 {
+                for _ in 0..32 {
+                    drop(Gc::new([0_u8; 64]));
+                }
+                total += 32 * temporary_bytes;
+                force_collect();
+                assert_eq!(
+                    heap_statistics(),
+                    Some(HeapStatistics {
+                        bytes_allocated: fixed_bytes,
+                        collections: Some(collections),
+                        cumulative_bytes_allocated: Some(u64::try_from(total).unwrap()),
+                    })
+                );
+            }
+            assert_eq!(*fixed, 17);
+        });
+    }
+
+    #[test]
+    fn heap_statistics_report_overflow_without_losing_the_live_gauge() {
+        run_test(|| {
+            let bytes = size_of::<GcBox<u8>>();
+            let total_before = u64::MAX - u64::try_from(bytes).unwrap();
+            crate::BOA_GC.with_borrow_mut(|gc| {
+                gc.runtime.cumulative_bytes_allocated = Some(total_before);
+                gc.runtime.collections = Some(u64::MAX - 1);
+            });
+            let retained = Gc::new(7_u8);
+            force_collect();
+            assert_eq!(
+                heap_statistics(),
+                Some(HeapStatistics {
+                    bytes_allocated: bytes,
+                    collections: Some(u64::MAX),
+                    cumulative_bytes_allocated: Some(u64::MAX),
+                })
+            );
+            drop(Gc::new(8_u8));
+            assert_eq!(
+                heap_statistics(),
+                Some(HeapStatistics {
+                    bytes_allocated: 2 * bytes,
+                    collections: Some(u64::MAX),
+                    cumulative_bytes_allocated: None,
+                })
+            );
+            force_collect();
+            drop(Gc::new(9_u8));
+            force_collect();
+            assert_eq!(
+                heap_statistics(),
+                Some(HeapStatistics {
+                    bytes_allocated: bytes,
+                    collections: None,
+                    cumulative_bytes_allocated: None,
+                })
+            );
+            assert_eq!(*retained, 7);
         });
     }
 
