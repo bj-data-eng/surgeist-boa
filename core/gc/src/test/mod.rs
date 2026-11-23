@@ -11,13 +11,13 @@ struct Harness;
 
 impl Harness {
     #[track_caller]
-    fn assert_collections(o: usize) {
+    fn assert_collections(o: u64) {
         let collections = BOA_GC.with(|current| {
             let gc = current.borrow();
             gc.runtime.collections
         });
 
-        assert_eq!(collections, o);
+        assert_eq!(collections, Some(o));
     }
 
     #[track_caller]

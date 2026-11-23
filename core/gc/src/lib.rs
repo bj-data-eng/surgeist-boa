@@ -71,10 +71,30 @@ impl Default for GcConfig {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct GcRuntimeData {
-    collections: usize,
+    collections: Option<u64>,
     bytes_allocated: usize,
+    cumulative_bytes_allocated: Option<u64>,
+}
+
+impl Default for GcRuntimeData {
+    fn default() -> Self {
+        Self {
+            collections: Some(0),
+            bytes_allocated: 0,
+            cumulative_bytes_allocated: Some(0),
+        }
+    }
+}
+
+impl GcRuntimeData {
+    fn record_allocation(&mut self, bytes: usize) {
+        self.bytes_allocated += bytes;
+        self.cumulative_bytes_allocated = self
+            .cumulative_bytes_allocated
+            .and_then(|total| total.checked_add(u64::try_from(bytes).ok()?));
+    }
 }
 
 #[derive(Debug)]
@@ -139,7 +159,7 @@ impl Allocator {
             let erased: NonNull<GcBox<NonTraceable>> = ptr.cast();
 
             gc.strongs.push(erased);
-            gc.runtime.bytes_allocated += element_size;
+            gc.runtime.record_allocation(element_size);
 
             ptr
         })
@@ -158,7 +178,7 @@ impl Allocator {
             let erased: NonNull<dyn ErasedEphemeronBox> = ptr;
 
             gc.weaks.push(erased);
-            gc.runtime.bytes_allocated += element_size;
+            gc.runtime.record_allocation(element_size);
 
             ptr
         })
@@ -223,7 +243,10 @@ struct Collector;
 impl Collector {
     /// Run a collection on the full heap.
     fn collect(gc: &mut BoaGc) {
-        gc.runtime.collections += 1;
+        gc.runtime.collections = gc
+            .runtime
+            .collections
+            .and_then(|count| count.checked_add(1));
 
         Self::trace_non_roots(gc);
 
@@ -538,8 +561,13 @@ pub struct HeapStatistics {
     /// collection. This excludes allocator overhead, separate buffers owned by
     /// box contents, and storage outside the collector's box accounting.
     pub bytes_allocated: usize,
-    /// The number of collections performed by this thread's collector.
-    pub collections: usize,
+    /// The number of collection cycles entered by this thread's collector.
+    /// None means the count exceeded its representation.
+    pub collections: Option<u64>,
+    /// Cumulative shallow bytes registered on this thread, on the same basis
+    /// as `bytes_allocated`. Sweeping does not reduce this total. None means
+    /// the total exceeded its representation.
+    pub cumulative_bytes_allocated: Option<u64>,
 }
 
 /// Observes the current thread's collector without running a collection.
@@ -555,6 +583,7 @@ pub fn heap_statistics() -> Option<HeapStatistics> {
             Some(HeapStatistics {
                 bytes_allocated: gc.runtime.bytes_allocated,
                 collections: gc.runtime.collections,
+                cumulative_bytes_allocated: gc.runtime.cumulative_bytes_allocated,
             })
         })
         .ok()
