@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    panic::{AssertUnwindSafe, catch_unwind},
     pin::pin,
     rc::Rc,
 };
@@ -157,6 +158,45 @@ fn retiring_a_suspended_microtask_releases_its_captures_without_entering_the_suf
     assert_eq!(capture.get(), 1);
     foreign.run_jobs().unwrap();
     assert_eq!(tail_runs.get(), 0);
+}
+
+#[test]
+fn unwind_abandons_the_host_occurrence_without_entering_its_promise_suffix() {
+    let mut context = Context::default();
+    let host_runs = Rc::new(Cell::new(0));
+    let counter = host_runs.clone();
+    context
+        .enqueue_host_microtask(move |_| {
+            counter.set(counter.get() + 1);
+            assert_ne!(counter.get(), 1, "first host entry unwinds");
+            Ok(MicrotaskProgress::Complete)
+        })
+        .unwrap();
+    context
+        .eval(Source::from_bytes(
+            "globalThis.tail = 0; Promise.resolve().then(() => ++tail);",
+        ))
+        .unwrap();
+    let outer = context.create_realm().unwrap();
+    let source = context.enter_realm(outer.clone());
+    let result = catch_unwind(AssertUnwindSafe(|| context.run_microtask_checkpoint()));
+    assert!(result.is_err());
+    assert_eq!(context.realm(), &outer);
+    context.enter_realm(source);
+    let read_tail = |context: &mut Context| {
+        context
+            .eval(Source::from_bytes("tail"))
+            .unwrap()
+            .as_number()
+            .unwrap()
+    };
+    assert_eq!(read_tail(&mut context), 0.0);
+    assert_eq!(
+        context.run_microtask_checkpoint().unwrap(),
+        MicrotaskProgress::Complete
+    );
+    assert_eq!(host_runs.get(), 1);
+    assert_eq!(read_tail(&mut context), 1.0);
 }
 
 #[test]

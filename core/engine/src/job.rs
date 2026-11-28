@@ -834,15 +834,24 @@ type HostMicrotaskBody = dyn FnMut(&mut Context) -> JsResult<MicrotaskProgress>;
 struct HostMicrotask {
     realm: Realm,
     body: Box<HostMicrotaskBody>,
+    can_enter: bool,
 }
 
 impl HostMicrotask {
     fn run(&mut self, context: &mut Context) -> JsResult<MicrotaskProgress> {
+        // Once entered, only an explicit suspension makes this occurrence
+        // callable again. After an unwind, retire the queue head without
+        // replaying its body or dropping its captures during the unwind.
+        if !mem::take(&mut self.can_enter) {
+            return Ok(MicrotaskProgress::Complete);
+        }
         let previous = context.enter_realm(self.realm.clone());
         let mut entered = ContextCleanupGuard::new(context, move |context| {
             context.enter_realm(previous);
         });
-        (self.body)(&mut entered)
+        let progress = (self.body)(&mut entered)?;
+        self.can_enter = progress == MicrotaskProgress::Suspended;
+        Ok(progress)
     }
 }
 
@@ -989,6 +998,7 @@ impl SimpleJobExecutor {
         jobs.push_back(Microtask::Host(Rc::new(RefCell::new(HostMicrotask {
             realm,
             body: Box::new(body),
+            can_enter: true,
         }))));
         self.host_microtasks.set(count);
         Ok(())

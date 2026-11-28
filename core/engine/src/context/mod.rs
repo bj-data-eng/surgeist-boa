@@ -584,6 +584,8 @@ impl Context {
     /// Use `run_microtask_checkpoint` to drive an executor with queued host
     /// microtasks. The closure keeps its captured state across suspension.
     /// The default executor accepts the operation outside a full job turn.
+    /// If the body unwinds, the next microtask checkpoint retires the
+    /// occurrence and continues its untouched suffix without calling it again.
     pub fn enqueue_host_microtask(
         &mut self,
         body: impl FnMut(&mut Context) -> JsResult<MicrotaskProgress> + 'static,
