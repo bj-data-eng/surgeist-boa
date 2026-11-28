@@ -22,7 +22,7 @@ use crate::vm::{CodeBlock, RuntimeLimits, create_function_object_fast};
 use crate::{
     HostDefined, JsNativeError, JsResult, JsString, JsValue, Source, builtins,
     class::{Class, ClassBuilder},
-    job::{JobExecutor, SimpleJobExecutor},
+    job::{JobExecutor, MicrotaskProgress, SimpleJobExecutor},
     js_string,
     module::{IdleModuleLoader, ModuleLoader, SimpleModuleLoader},
     native_function::NativeFunction,
@@ -148,6 +148,7 @@ pub struct Context {
     clock: Rc<dyn Clock>,
 
     job_executor: Rc<dyn JobExecutor>,
+    owns_job_executor: bool,
 
     module_loader: Rc<dyn DynModuleLoader>,
 
@@ -188,6 +189,11 @@ impl std::fmt::Debug for Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
+        if let Some(executor) = self.owned_microtask_executor()
+            && executor.has_pending_host_microtasks()
+        {
+            executor.clear_microtasks();
+        }
         if !self.can_block {
             CANNOT_BLOCK_COUNTER.set(CANNOT_BLOCK_COUNTER.get() - 1);
         }
@@ -571,6 +577,53 @@ impl Context {
     #[inline]
     pub fn run_jobs(&mut self) -> JsResult<()> {
         self.job_executor().run_jobs(self)
+    }
+
+    /// Enqueues a resumable host microtask in the current realm's job order.
+    ///
+    /// Use `run_microtask_checkpoint` to drive an executor with queued host
+    /// microtasks. The closure keeps its captured state across suspension.
+    /// The default executor accepts the operation outside a full job turn.
+    pub fn enqueue_host_microtask(
+        &mut self,
+        body: impl FnMut(&mut Context) -> JsResult<MicrotaskProgress> + 'static,
+    ) -> JsResult<()> {
+        let executor = self.owned_microtask_executor().ok_or_else(|| {
+            JsNativeError::error().with_message("host microtasks require the default job executor")
+        })?;
+        executor.enqueue_host_microtask(self.realm().clone(), body)
+    }
+
+    /// Returns the executor storage for one host microtask, excluding its closure.
+    #[must_use]
+    pub const fn host_microtask_storage_bytes() -> usize {
+        SimpleJobExecutor::host_microtask_storage_bytes()
+    }
+
+    /// Reports whether the default executor holds any admitted host microtask.
+    #[must_use]
+    pub fn has_pending_host_microtasks(&self) -> bool {
+        self.owned_microtask_executor()
+            .is_some_and(|executor| executor.has_pending_host_microtasks())
+    }
+
+    /// Drives the default executor's ordered microtasks through completion or suspension.
+    ///
+    /// Pending engine tasks stay in the executor for a later full job turn.
+    /// A suspended host occurrence remains ahead of its untouched suffix.
+    pub fn run_microtask_checkpoint(&mut self) -> JsResult<MicrotaskProgress> {
+        let executor = self.owned_microtask_executor().ok_or_else(|| {
+            JsNativeError::error().with_message("host microtasks require the default job executor")
+        })?;
+        executor.run_microtask_checkpoint(self)
+    }
+
+    fn owned_microtask_executor(&self) -> Option<Rc<SimpleJobExecutor>> {
+        if self.owns_job_executor {
+            self.downcast_job_executor::<SimpleJobExecutor>()
+        } else {
+            None
+        }
     }
 
     /// Abstract operation [`ClearKeptObjects`][clear].
@@ -1293,6 +1346,7 @@ impl ContextBuilder {
             Rc::new(IdleModuleLoader)
         };
 
+        let owns_job_executor = self.job_executor.is_none();
         let job_executor = self
             .job_executor
             .unwrap_or_else(|| Rc::new(SimpleJobExecutor::new()));
@@ -1330,6 +1384,7 @@ impl ContextBuilder {
             host_hooks,
             clock,
             job_executor,
+            owns_job_executor,
             module_loader,
             optimizer_options: OptimizerOptions::OPTIMIZE_ALL,
             root_shape,
