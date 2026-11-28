@@ -30,10 +30,13 @@
 //! [JobCallback]: https://tc39.es/ecma262/#sec-jobcallback-records
 //! [`Gc`]: boa_gc::Gc
 
-use crate::context::time::{JsDuration, JsInstant};
+use crate::context::{
+    ContextCleanupGuard,
+    time::{JsDuration, JsInstant},
+};
 use crate::sys::time;
 use crate::{
-    Context, JsResult, JsValue,
+    Context, JsNativeError, JsResult, JsValue,
     object::{JsFunction, NativeObject},
     realm::Realm,
 };
@@ -817,6 +820,57 @@ pub trait JobExecutor: Any {
     }
 }
 
+/// The state of a host microtask or of an explicit microtask checkpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MicrotaskProgress {
+    /// The occurrence or checkpoint completed.
+    Complete,
+    /// The current occurrence retains its position and can resume.
+    Suspended,
+}
+
+type HostMicrotaskBody = dyn FnMut(&mut Context) -> JsResult<MicrotaskProgress>;
+
+struct HostMicrotask {
+    realm: Realm,
+    body: Box<HostMicrotaskBody>,
+}
+
+impl HostMicrotask {
+    fn run(&mut self, context: &mut Context) -> JsResult<MicrotaskProgress> {
+        let previous = context.enter_realm(self.realm.clone());
+        let mut entered = ContextCleanupGuard::new(context, move |context| {
+            context.enter_realm(previous);
+        });
+        (self.body)(&mut entered)
+    }
+}
+
+enum Microtask {
+    Promise(PromiseJob),
+    Host(Rc<RefCell<HostMicrotask>>),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum JobTurn {
+    #[default]
+    Idle,
+    All(usize),
+    Microtasks,
+}
+
+struct JobTurnGuard<'a>(&'a Cell<JobTurn>);
+
+impl Drop for JobTurnGuard<'_> {
+    fn drop(&mut self) {
+        let remaining = match self.0.get() {
+            JobTurn::All(active) if active > 1 => JobTurn::All(active - 1),
+            _ => JobTurn::Idle,
+        };
+        self.0.set(remaining);
+    }
+}
+
 /// A job executor that does nothing.
 ///
 /// This executor is mostly useful if you want to disable the promise capabilities of the engine. This
@@ -868,7 +922,9 @@ impl ClockJob {
 /// To disable running promise jobs on the engine, see [`IdleJobExecutor`].
 #[derive(Default)]
 pub struct SimpleJobExecutor {
-    promise_jobs: RefCell<VecDeque<PromiseJob>>,
+    promise_jobs: RefCell<VecDeque<Microtask>>,
+    host_microtasks: Cell<usize>,
+    turn: Cell<JobTurn>,
     async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
     finalization_registry_jobs: RefCell<VecDeque<NativeAsyncJob>>,
     clock_jobs: RefCell<BTreeMap<JsInstant, Vec<ClockJob>>>,
@@ -878,10 +934,121 @@ pub struct SimpleJobExecutor {
 
 impl SimpleJobExecutor {
     fn clear(&self) {
-        self.promise_jobs.borrow_mut().clear();
+        self.clear_microtasks();
         self.async_jobs.borrow_mut().clear();
         self.clock_jobs.borrow_mut().clear();
         self.generic_jobs.borrow_mut().clear();
+    }
+
+    pub(crate) fn clear_microtasks(&self) {
+        let abandoned = mem::take(&mut *self.promise_jobs.borrow_mut());
+        self.host_microtasks.set(0);
+        drop(abandoned);
+    }
+
+    fn begin_turn(&self, turn: JobTurn) -> JsResult<JobTurnGuard<'_>> {
+        let next = match (self.turn.get(), turn) {
+            (JobTurn::Idle, next) => next,
+            (JobTurn::All(active), JobTurn::All(_)) => {
+                JobTurn::All(active.checked_add(1).ok_or_else(|| {
+                    JsNativeError::range().with_message("active job turn count exhausted")
+                })?)
+            }
+            _ => {
+                return Err(JsNativeError::error()
+                    .with_message("a job turn is already active")
+                    .into());
+            }
+        };
+        if matches!(next, JobTurn::All(_)) && self.host_microtasks.get() != 0 {
+            return Err(JsNativeError::error()
+                .with_message("host microtasks require an explicit microtask checkpoint")
+                .into());
+        }
+        self.turn.set(next);
+        Ok(JobTurnGuard(&self.turn))
+    }
+
+    pub(crate) fn enqueue_host_microtask(
+        &self,
+        realm: Realm,
+        body: impl FnMut(&mut Context) -> JsResult<MicrotaskProgress> + 'static,
+    ) -> JsResult<()> {
+        if matches!(self.turn.get(), JobTurn::All(_)) {
+            return Err(JsNativeError::error()
+                .with_message("host microtasks cannot be queued during a full job turn")
+                .into());
+        }
+        let count = self.host_microtasks.get().checked_add(1).ok_or_else(|| {
+            JsNativeError::range().with_message("host microtask count is exhausted")
+        })?;
+        let mut jobs = self.promise_jobs.borrow_mut();
+        jobs.try_reserve(1).map_err(|_| {
+            JsNativeError::range().with_message("host microtask queue allocation failed")
+        })?;
+        jobs.push_back(Microtask::Host(Rc::new(RefCell::new(HostMicrotask {
+            realm,
+            body: Box::new(body),
+        }))));
+        self.host_microtasks.set(count);
+        Ok(())
+    }
+
+    pub(crate) const fn host_microtask_storage_bytes() -> usize {
+        size_of::<Microtask>() + size_of::<RefCell<HostMicrotask>>() + 2 * size_of::<usize>()
+    }
+
+    pub(crate) fn has_pending_host_microtasks(&self) -> bool {
+        self.host_microtasks.get() != 0
+    }
+
+    pub(crate) fn run_microtask_checkpoint(
+        &self,
+        context: &mut Context,
+    ) -> JsResult<MicrotaskProgress> {
+        let _turn = self.begin_turn(JobTurn::Microtasks)?;
+        loop {
+            if self.stop.swap(false, Ordering::Relaxed) {
+                self.clear_microtasks();
+                context.clear_kept_objects();
+                return Err(JsNativeError::error()
+                    .with_message("the microtask checkpoint was stopped")
+                    .into());
+            }
+            let next = {
+                let mut jobs = self.promise_jobs.borrow_mut();
+                match jobs.front() {
+                    Some(Microtask::Host(job)) => Some(Microtask::Host(job.clone())),
+                    _ => jobs.pop_front(),
+                }
+            };
+            let result = match next {
+                Some(Microtask::Promise(job)) => {
+                    job.call(context).map(|_| MicrotaskProgress::Complete)
+                }
+                Some(Microtask::Host(job)) => match job.borrow_mut().run(context) {
+                    Ok(MicrotaskProgress::Complete) => {
+                        self.promise_jobs.borrow_mut().pop_front();
+                        self.host_microtasks.set(self.host_microtasks.get() - 1);
+                        Ok(MicrotaskProgress::Complete)
+                    }
+                    result => result,
+                },
+                None => {
+                    context.clear_kept_objects();
+                    return Ok(MicrotaskProgress::Complete);
+                }
+            };
+            match result {
+                Ok(MicrotaskProgress::Complete) => {}
+                Ok(MicrotaskProgress::Suspended) => return Ok(MicrotaskProgress::Suspended),
+                Err(error) => {
+                    self.clear_microtasks();
+                    context.clear_kept_objects();
+                    return Err(error);
+                }
+            }
+        }
     }
 }
 
@@ -917,7 +1084,10 @@ impl SimpleJobExecutor {
 impl JobExecutor for SimpleJobExecutor {
     fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
         match job {
-            Job::PromiseJob(p) => self.promise_jobs.borrow_mut().push_back(p),
+            Job::PromiseJob(p) => self
+                .promise_jobs
+                .borrow_mut()
+                .push_back(Microtask::Promise(p)),
             Job::AsyncJob(a) => self.async_jobs.borrow_mut().push_back(a),
             Job::TimeoutJob(t) => {
                 let now = context.clock().now();
@@ -950,6 +1120,7 @@ impl JobExecutor for SimpleJobExecutor {
     where
         Self: Sized,
     {
+        let _turn = self.begin_turn(JobTurn::All(1))?;
         let mut group = FutureGroup::new();
         let mut fr_group = FutureGroup::new();
         loop {
@@ -1027,6 +1198,11 @@ impl JobExecutor for SimpleJobExecutor {
 
             let jobs = mem::take(&mut *self.promise_jobs.borrow_mut());
             for job in jobs {
+                let Microtask::Promise(job) = job else {
+                    return Err(JsNativeError::error()
+                        .with_message("a full job turn encountered a host microtask")
+                        .into());
+                };
                 if let Err(err) = job.call(&mut context.borrow_mut()) {
                     self.clear();
                     return Err(err);
